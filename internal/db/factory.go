@@ -13,7 +13,7 @@ func NewProviderFactory(cfg config.Config) *ProviderFactory {
 			ProviderMongoDB:    NewMongoDBProvider(),
 			ProviderMySQL:      NewMySQLProvider(cfg),
 			ProviderSQLServer:  NewSQLServerProvider(cfg),
-			ProviderOracle:     NewOracleProvider(),
+			ProviderOracle:     NewOracleProvider(cfg),
 		},
 	}
 }

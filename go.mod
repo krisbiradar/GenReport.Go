@@ -6,6 +6,7 @@ require (
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/microsoft/go-mssqldb v1.7.2
 	github.com/rs/zerolog v1.33.0
+	github.com/sijms/go-ora/v2 v2.8.25
 	github.com/spf13/viper v1.19.0
 	go.mongodb.org/mongo-driver v1.17.6
 	go.uber.org/zap v1.27.0

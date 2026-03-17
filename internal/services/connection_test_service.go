@@ -82,10 +82,10 @@ func mapConnectionError(kind db.ProviderKind, err error) string {
 	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(raw, "timeout") {
 		return providerLabel(kind) + " connection timeout"
 	}
-	if strings.Contains(raw, "not implemented") {
-		return "Oracle provider is not implemented"
-	}
 	if strings.Contains(raw, "authentication") || strings.Contains(raw, "login failed") || strings.Contains(raw, "access denied") {
+		return providerLabel(kind) + " authentication failed"
+	}
+	if strings.Contains(raw, "ora-01017") || strings.Contains(raw, "invalid username/password") {
 		return providerLabel(kind) + " authentication failed"
 	}
 	if strings.Contains(raw, "no such host") || strings.Contains(raw, "name or service not known") {
