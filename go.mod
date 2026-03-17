@@ -3,7 +3,11 @@ module genreport
 go 1.23.1
 
 require (
+	github.com/go-sql-driver/mysql v1.8.1
+	github.com/microsoft/go-mssqldb v1.7.2
+	github.com/rs/zerolog v1.33.0
 	github.com/spf13/viper v1.19.0
+	go.mongodb.org/mongo-driver v1.17.6
 	go.uber.org/zap v1.27.0
 	gorm.io/driver/postgres v1.5.9
 	gorm.io/gorm v1.25.12
