@@ -26,14 +26,7 @@ func NewPostgresProvider(cfg config.Config) *PostgresProvider {
 }
 
 func (p *PostgresProvider) TestConnection(ctx context.Context, req models.TestConnectionRequest) error {
-	connectionString := strings.TrimSpace(req.ConnectionString)
-	if connectionString == "" {
-		port := req.Port
-		if port <= 0 {
-			port = 5432
-		}
-		connectionString = buildPostgresConnectionString(req.HostName, port, req.UserName, req.Password, req.DatabaseName)
-	}
+	connectionString := resolvePostgresConnString(req)
 
 	dbConn, err := p.cache.GetOrCreate(connectionString, func() (*sql.DB, error) {
 		dbConn, openErr := sql.Open("pgx", connectionString)
@@ -68,4 +61,26 @@ func buildPostgresConnectionString(host string, port int, user string, password 
 	}
 
 	return connURL.String()
+}
+
+// resolvePostgresConnString returns a pgx-compatible DSN.
+// If the request contains a native pgx URL (postgres:// or postgresql://) it is
+// used as-is. ADO.NET-style strings ("Server=...;Port=...") sent by the .NET
+// frontend are ignored in favour of building a proper DSN from the individual
+// request fields.
+func resolvePostgresConnString(req models.TestConnectionRequest) string {
+	cs := strings.TrimSpace(req.ConnectionString)
+
+	// Accept native pgx URLs as-is.
+	if strings.HasPrefix(cs, "postgres://") || strings.HasPrefix(cs, "postgresql://") {
+		return cs
+	}
+
+	// Build from individual fields (covers the ADO.NET-format case and the
+	// no-connection-string case).
+	port := req.Port
+	if port <= 0 {
+		port = 5432
+	}
+	return buildPostgresConnectionString(req.HostName, port, req.UserName, req.Password, req.DatabaseName)
 }

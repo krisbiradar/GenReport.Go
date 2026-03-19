@@ -13,10 +13,15 @@ import (
 	"genreport/internal/handlers"
 	"genreport/internal/services"
 
+	"github.com/joho/godotenv"
 	"github.com/rs/zerolog"
 )
 
 func main() {
+	if err := godotenv.Load(); err != nil {
+		_ = godotenv.Load("../../.env")
+	}
+
 	cfg := config.Load()
 	logger := zerolog.New(os.Stdout).With().Timestamp().Logger().Level(cfg.LogLevel)
 

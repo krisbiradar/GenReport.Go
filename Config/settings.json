@@ -1,8 +1,0 @@
-{
-  "port":12334,
-  "connectionString" : "host=localhost port=5432 user=yourusername password=yourpassword dbname=yourdbname sslmode=disable",
-  "maxAllowedConnections": 1000,
-  "maxIdleConnection": 100,
-  "maxConnectionTime": 1200,
-  "connectionCheckInterval": 5
-}
