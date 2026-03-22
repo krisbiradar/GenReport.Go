@@ -1,7 +1,22 @@
 package jobs
 
-import "github.com/rs/zerolog"
+import (
+	"encoding/json"
+	"time"
 
-func HealthCheckJob(logger zerolog.Logger) {
-	logger.Info().Msg("background job: health check heartbeat")
+	"genreport/internal/broker"
+
+	"github.com/rs/zerolog"
+)
+
+// HealthCheckJob publishes a health check message to RabbitMQ.
+func HealthCheckJob(producer *broker.Producer, logger zerolog.Logger) {
+	payload, _ := json.Marshal(map[string]interface{}{
+		"type":      "health_check",
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	})
+
+	if err := producer.Publish("health_check", payload); err != nil {
+		logger.Error().Err(err).Msg("failed to publish health check job")
+	}
 }

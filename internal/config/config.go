@@ -17,6 +17,7 @@ type JobSettings struct {
 type Config struct {
 	Port               string
 	DatabaseURL        string
+	RabbitMQURL        string
 	DBTestTimeout      time.Duration
 	LogLevel           zerolog.Level
 	SQLMaxOpenConns    int
@@ -29,6 +30,7 @@ func Load() Config {
 	return Config{
 		Port:               readString("GO_SERVICE_PORT", "12334"),
 		DatabaseURL:        readString("DATABASE_URL", ""),
+		RabbitMQURL:        readString("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
 		DBTestTimeout:      time.Duration(readInt("DB_TEST_TIMEOUT_SECONDS", 5)) * time.Second,
 		LogLevel:           parseLogLevel(readString("LOG_LEVEL", "info")),
 		SQLMaxOpenConns:    readInt("DB_TEST_SQL_MAX_OPEN_CONNS", 5),
