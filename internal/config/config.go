@@ -14,6 +14,14 @@ type JobSettings struct {
 	Interval time.Duration
 }
 
+type R2Config struct {
+	AccountID       string
+	AccessKeyID     string
+	SecretAccessKey string
+	Bucket          string
+	PublicURL       string // e.g. https://pub-<hash>.r2.dev or custom domain
+}
+
 type Config struct {
 	Port               string
 	DatabaseURL        string
@@ -24,6 +32,7 @@ type Config struct {
 	SQLMaxIdleConns    int
 	SQLConnMaxLifetime time.Duration
 	Jobs               map[string]JobSettings
+	R2                 R2Config
 }
 
 func Load() Config {
@@ -37,6 +46,13 @@ func Load() Config {
 		SQLMaxIdleConns:    readInt("DB_TEST_SQL_MAX_IDLE_CONNS", 2),
 		SQLConnMaxLifetime: time.Duration(readInt("DB_TEST_SQL_CONN_MAX_LIFETIME_SECONDS", 300)) * time.Second,
 		Jobs:               loadJobSettings(),
+		R2: R2Config{
+			AccountID:       readString("R2_ACCOUNT_ID", ""),
+			AccessKeyID:     readString("R2_ACCESS_KEY_ID", ""),
+			SecretAccessKey: readString("R2_SECRET_ACCESS_KEY", ""),
+			Bucket:          readString("R2_BUCKET", ""),
+			PublicURL:       readString("R2_PUBLIC_URL", ""),
+		},
 	}
 }
 

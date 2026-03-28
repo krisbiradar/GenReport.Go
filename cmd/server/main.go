@@ -72,7 +72,15 @@ func main() {
 	providerFactory := db.NewProviderFactory(cfg)
 	connectionService := services.NewConnectionTestService(providerFactory, cfg.DBTestTimeout, logger)
 	connectionHandler := handlers.NewConnectionHandler(connectionService, logger)
-	router := handlers.NewRouter(connectionHandler)
+
+	r2Service, err := services.NewR2UploadService(cfg.R2, logger)
+	if err != nil {
+		logger.Warn().Err(err).Msg("R2 upload service unavailable — /storage/upload will return errors")
+	}
+	uploadHandler := handlers.NewUploadHandler(r2Service, logger)
+
+	router := handlers.NewRouter(connectionHandler, uploadHandler)
+
 
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
