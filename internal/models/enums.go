@@ -1,12 +1,11 @@
 package models
 
-// AiEndpointType represents the functional category of an AI model endpoint.
-type AiEndpointType int
+// AiConfigType represents supported types of AI configurations.
+type AiConfigType int
 
 const (
-	AiEndpointTypeChat   AiEndpointType = 1
-	AiEndpointTypeModels AiEndpointType = 2
-	AiEndpointTypeQuota  AiEndpointType = 3
+	AiConfigTypeIntentClassifier AiConfigType = 1
+	AiConfigTypeChatSystemPrompt AiConfigType = 2
 )
 
 // DatabaseType represents different database types.

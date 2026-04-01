@@ -6,11 +6,13 @@ import "time"
 type ChatSession struct {
 	ID        int64         `gorm:"column:id;primaryKey"`
 	UserID    int64         `gorm:"column:user_id"`
-	Title     *string       `gorm:"column:title;size:255"`
-	CreatedAt time.Time     `gorm:"column:created_at"`
-	UpdatedAt time.Time     `gorm:"column:updated_at"`
-	User      *User         `gorm:"foreignKey:UserID"`
-	Messages  []ChatMessage `gorm:"foreignKey:SessionID"`
+	Title          *string       `gorm:"column:title;size:255"`
+	AiConnectionID *int64        `gorm:"column:ai_connection_id"`
+	CreatedAt      time.Time     `gorm:"column:created_at"`
+	UpdatedAt      time.Time     `gorm:"column:updated_at"`
+	User           *User         `gorm:"foreignKey:UserID"`
+	AiConnection   *AiConnection `gorm:"foreignKey:AiConnectionID"`
+	Messages       []ChatMessage `gorm:"foreignKey:SessionID"`
 }
 
 func (ChatSession) TableName() string { return "chat_sessions" }

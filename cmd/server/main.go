@@ -21,6 +21,7 @@ import (
 	"github.com/go-co-op/gocron/v2"
 	"github.com/joho/godotenv"
 	"github.com/rs/zerolog"
+	"gorm.io/gorm"
 )
 
 func main() {
@@ -32,8 +33,10 @@ func main() {
 	logger := zerolog.New(os.Stdout).With().Timestamp().Logger().Level(cfg.LogLevel)
 
 	// Shared database (GORM) — optional, only if DATABASE_URL is configured
+	var gormDB *gorm.DB
 	if cfg.DatabaseURL != "" {
-		_, err := database.Connect(cfg.DatabaseURL, logger)
+		var err error
+		gormDB, err = database.Connect(cfg.DatabaseURL, logger)
 		if err != nil {
 			logger.Warn().Err(err).Msg("shared database connection failed — continuing without it")
 		}
@@ -53,7 +56,7 @@ func main() {
 
 	// Start one worker per topic
 	done := make(chan struct{})
-	for _, w := range workers.All(logger) {
+	for _, w := range workers.All(logger, gormDB) {
 		if err := consumer.StartWorker(w.Topic, w.Handler, done); err != nil {
 			logger.Fatal().Err(err).Str("topic", w.Topic).Msg("failed to start worker")
 		}
