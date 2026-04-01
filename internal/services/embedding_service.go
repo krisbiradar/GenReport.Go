@@ -1,0 +1,105 @@
+package services
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+
+	"genreport/internal/models"
+)
+
+type EmbeddingService struct {
+	aiConn *models.AiConnection
+	client *http.Client
+}
+
+func NewEmbeddingService(aiConn *models.AiConnection) *EmbeddingService {
+	return &EmbeddingService{
+		aiConn: aiConn,
+		client: &http.Client{},
+	}
+}
+
+type openAIEmbeddingRequest struct {
+	Input string `json:"input"`
+	Model string `json:"model"`
+}
+
+type openAIEmbeddingResponse struct {
+	Data []struct {
+		Embedding []float64 `json:"embedding"`
+	} `json:"data"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// GenerateEmbedding generates a vector embedding for the given text.
+func (s *EmbeddingService) GenerateEmbedding(ctx context.Context, text string) ([]float64, error) {
+	if s.aiConn == nil || s.aiConn.ApiKey == "" {
+		return nil, errors.New("no valid AI connection provided for embedding")
+	}
+
+	// Truncate text if it's too large to prevent complete failure (OpenAI max is usually 8192 tokens roughly ~30k chars)
+	if len(text) > 30000 {
+		text = text[:30000]
+	}
+
+	model := s.aiConn.DefaultModel
+	if model == "" {
+		model = "text-embedding-3-small"
+	}
+
+	reqBody := openAIEmbeddingRequest{
+		Input: text,
+		Model: model,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal embedding request: %w", err)
+	}
+
+	// Assuming OpenAI standard endpoint format for now
+	url := "https://api.openai.com/v1/embeddings"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create embedding request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+s.aiConn.ApiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("embedding API error (status %d): %s", resp.StatusCode, string(bodyData))
+	}
+
+	var embedResp openAIEmbeddingResponse
+	if err := json.Unmarshal(bodyData, &embedResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	if embedResp.Error != nil {
+		return nil, fmt.Errorf("API error: %s", embedResp.Error.Message)
+	}
+	if len(embedResp.Data) == 0 {
+		return nil, errors.New("no embedding data returned")
+	}
+
+	return embedResp.Data[0].Embedding, nil
+}

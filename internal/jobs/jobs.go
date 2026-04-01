@@ -29,6 +29,12 @@ var registry = []jobEntry{
 			return gocron.NewTask(CleanupJob, producer, logger)
 		},
 	},
+	{
+		ConfigKey: "SCHEMA_SYNC",
+		NewTask: func(producer *broker.Producer, logger zerolog.Logger) gocron.Task {
+			return gocron.NewTask(SchemaSyncJob, producer, logger)
+		},
+	},
 }
 
 // RegisterAll registers all enabled background jobs with the scheduler.

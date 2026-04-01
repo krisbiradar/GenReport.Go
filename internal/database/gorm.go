@@ -9,6 +9,13 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+var globalDB *gorm.DB
+
+// GetDB returns the configured global GORM database connection, or nil if not connected.
+func GetDB() *gorm.DB {
+	return globalDB
+}
+
 // Connect opens a GORM connection to the shared PostgreSQL database.
 // It does NOT run AutoMigrate — schema ownership belongs to the C# project.
 func Connect(dsn string, log zerolog.Logger) (*gorm.DB, error) {
@@ -36,5 +43,6 @@ func Connect(dsn string, log zerolog.Logger) (*gorm.DB, error) {
 	}
 
 	log.Info().Msg("connected to shared PostgreSQL database via GORM (read-only schema)")
+	globalDB = db
 	return db, nil
 }
