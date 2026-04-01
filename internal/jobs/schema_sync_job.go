@@ -60,7 +60,7 @@ func processDatabase(
 	dbRecord models.Database, 
 	logger zerolog.Logger,
 ) {
-	log := logger.With().Str("db_name", dbRecord.Name).Str("provider", string(rune(dbRecord.Provider))).Logger()
+	log := logger.With().Str("db_name", dbRecord.Name).Str("provider", fmt.Sprintf("%d", dbRecord.Provider)).Logger()
 	log.Info().Msg("Processing database schema sync")
 
 	// Get extractor
