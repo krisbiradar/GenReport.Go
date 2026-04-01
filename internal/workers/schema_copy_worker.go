@@ -50,7 +50,7 @@ func HandleSchemaCopy(logger zerolog.Logger, db *gorm.DB) broker.JobHandler {
 }
 
 func processDatabase(ctx context.Context, logger zerolog.Logger, db *models.Database, masterKey string) error {
-	logger.Info().Str("db_name", db.Name).Str("provider", string(rune(db.Provider))).Msg("processing schema copy")
+	logger.Info().Str("db_name", db.Name).Int("provider", int(db.Provider)).Msg("processing schema copy")
 
 	// Decrypt the password
 	// Assuming "Password" is the string variant from C# CredentialType.Password
