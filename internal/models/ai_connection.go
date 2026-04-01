@@ -14,11 +14,12 @@ type AiConnection struct {
 	RateLimitRpm         *int               `gorm:"column:rate_limit_rpm"`
 	RateLimitTpm         *int               `gorm:"column:rate_limit_tpm"`
 	CostPer1kInputTokens  *float64          `gorm:"column:cost_per_1k_input_tokens;type:decimal(18,8)"`
-	CostPer1kOutputTokens *float64          `gorm:"column:cost_per_1k_output_tokens;type:decimal(18,8)"`
-	IsActive             bool               `gorm:"column:is_active"`
-	CreatedAt            time.Time          `gorm:"column:created_at;not null"`
-	UpdatedAt            time.Time          `gorm:"column:updated_at;not null"`
-	ModelEndpoints       []AiModelEndpoint  `gorm:"foreignKey:AiConnectionID"`
+	CostPer1kOutputTokens *float64    `gorm:"column:cost_per_1k_output_tokens;type:decimal(18,8)"`
+	IsActive             bool         `gorm:"column:is_active"`
+	IsDefault            bool         `gorm:"column:is_default;default:false"`
+	CreatedAt            time.Time    `gorm:"column:created_at;not null"`
+	UpdatedAt            time.Time    `gorm:"column:updated_at;not null"`
+	AiConfigs            []AiConfig   `gorm:"foreignKey:AiConnectionID"`
 }
 
 func (AiConnection) TableName() string { return "ai_connections" }

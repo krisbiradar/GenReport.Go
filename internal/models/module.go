@@ -8,6 +8,7 @@ type Module struct {
 	Name        string    `gorm:"column:name;not null"`
 	Description string    `gorm:"column:description;not null"`
 	IconClass   string    `gorm:"column:icon_class"`
+	UrlPrefix   string    `gorm:"column:url_prefix"`
 	CreatedAt   time.Time `gorm:"column:created_at"`
 	UpdatedAt   time.Time `gorm:"column:updated_at"`
 }
