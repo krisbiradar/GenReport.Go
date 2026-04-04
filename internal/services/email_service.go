@@ -66,7 +66,7 @@ func (s *EmailService) SendJobFailureAlert(jobName string, err error) {
 
 	// Send it
 	client, errClient := mail.NewClient(s.cfg.Host, mail.WithPort(s.cfg.Port), mail.WithSMTPAuth(mail.SMTPAuthPlain),
-		mail.WithUsername(s.cfg.Username), mail.WithPassword(s.cfg.Password))
+		mail.WithUsername(s.cfg.Username), mail.WithPassword(s.cfg.Password), mail.WithTLSPolicy(mail.TLSMandatory))
 	if errClient != nil {
 		s.logger.Error().Err(errClient).Msg("Failed to create SMTP client")
 		return
