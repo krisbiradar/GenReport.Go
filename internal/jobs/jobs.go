@@ -3,8 +3,10 @@ package jobs
 import (
 	"genreport/internal/broker"
 	"genreport/internal/config"
+	"genreport/internal/services"
 
 	"github.com/go-co-op/gocron/v2"
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 )
 
@@ -39,7 +41,7 @@ var registry = []jobEntry{
 
 // RegisterAll registers all enabled background jobs with the scheduler.
 // Jobs now act as producers — they publish messages to RabbitMQ topics.
-func RegisterAll(s gocron.Scheduler, cfg config.Config, producer *broker.Producer, logger zerolog.Logger) {
+func RegisterAll(s gocron.Scheduler, cfg config.Config, producer *broker.Producer, logger zerolog.Logger, emailService *services.EmailService) {
 	for _, entry := range registry {
 		settings, ok := cfg.Jobs[entry.ConfigKey]
 		if !ok || !settings.Enabled {
@@ -49,9 +51,26 @@ func RegisterAll(s gocron.Scheduler, cfg config.Config, producer *broker.Produce
 			continue
 		}
 
+		// Capture loop variable for use inside the closure.
+		jobConfigKey := entry.ConfigKey
+
 		_, err := s.NewJob(
 			gocron.DurationJob(settings.Interval),
 			entry.NewTask(producer, logger),
+			gocron.WithEventListeners(
+				gocron.AfterJobRunsWithError(func(jobID uuid.UUID, _ string, jobErr error) {
+					logger.Error().Err(jobErr).Str("job", jobConfigKey).Msg("job failed — disabling and sending alert")
+
+					// RemoveJob must not be called directly here: gocron holds its internal
+					// mutex while invoking this callback, so calling RemoveJob on the same
+					// goroutine would deadlock. Dispatch to a new goroutine instead.
+					go s.RemoveJob(jobID)
+
+					if emailService != nil {
+						go emailService.SendJobFailureAlert(jobConfigKey, jobErr)
+					}
+				}),
+			),
 		)
 		if err != nil {
 			logger.Error().

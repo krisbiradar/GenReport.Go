@@ -22,6 +22,14 @@ type R2Config struct {
 	PublicURL       string // e.g. https://pub-<hash>.r2.dev or custom domain
 }
 
+type SMTPConfig struct {
+	Host     string
+	Port     int
+	Username string
+	Password string
+	From     string
+}
+
 type Config struct {
 	Port               string
 	DatabaseURL        string
@@ -33,6 +41,7 @@ type Config struct {
 	SQLConnMaxLifetime time.Duration
 	Jobs               map[string]JobSettings
 	R2                 R2Config
+	SMTP               SMTPConfig
 }
 
 func Load() Config {
@@ -52,6 +61,13 @@ func Load() Config {
 			SecretAccessKey: readString("R2_SECRET_ACCESS_KEY", ""),
 			Bucket:          readString("R2_BUCKET", ""),
 			PublicURL:       readString("R2_PUBLIC_URL", ""),
+		},
+		SMTP: SMTPConfig{
+			Host:     readString("SMTP_HOST", ""),
+			Port:     readInt("SMTP_PORT", 587),
+			Username: readString("SMTP_USERNAME", ""),
+			Password: readString("SMTP_PASSWORD", ""),
+			From:     readString("SMTP_FROM", ""),
 		},
 	}
 }

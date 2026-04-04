@@ -26,7 +26,6 @@ func HandleSchemaCopy(logger zerolog.Logger, db *gorm.DB) broker.JobHandler {
 		logger.Info().Msg("starting schema copy job")
 
 		masterKey := os.Getenv("ENCRYPTION_MASTER_KEY")
-		masterKey := os.Getenv("ENCRYPTION_MASTER_KEY")
 		if masterKey == "" {
 			logger.Error().Msg("ENCRYPTION_MASTER_KEY is not set. Cannot run schema copy.")
 			return fmt.Errorf("ENCRYPTION_MASTER_KEY environment variable is not set")

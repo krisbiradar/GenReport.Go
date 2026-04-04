@@ -67,7 +67,7 @@ func main() {
 	if err != nil {
 		logger.Fatal().Err(err).Msg("failed to create job scheduler")
 	}
-	jobs.RegisterAll(scheduler, cfg, producer, logger)
+	jobs.RegisterAll(scheduler, cfg, producer, logger, services.NewEmailService(cfg.SMTP, database.GetDB(), logger))
 	scheduler.Start()
 	logger.Info().Msg("background job scheduler started")
 
