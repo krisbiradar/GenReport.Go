@@ -16,7 +16,7 @@ import (
 
 // SchemaSyncJob iterates through all stored databases, extracts their schemas/routines,
 // generates their vector embeddings, and persists them into the central database.
-func SchemaSyncJob(producer *broker.Producer, logger zerolog.Logger) {
+func SchemaSyncJob(producer *broker.Producer, logger zerolog.Logger) error {
 	logger.Info().Msg("Starting SchemaSyncJob")
 	ctx := context.Background()
 
@@ -24,7 +24,7 @@ func SchemaSyncJob(producer *broker.Producer, logger zerolog.Logger) {
 	gormDB := database.GetDB()
 	if gormDB == nil {
 		logger.Error().Msg("Failed to get gorm connection; aborting SchemaSyncJob")
-		return
+		return fmt.Errorf("failed to get gorm connection")
 	}
 
 	// 2. Load the active AI connection for embeddings
@@ -42,15 +42,19 @@ func SchemaSyncJob(producer *broker.Producer, logger zerolog.Logger) {
 	var dbList []models.Database
 	if err := gormDB.Find(&dbList).Error; err != nil {
 		logger.Error().Err(err).Msg("Failed to fetch databases")
-		return
+		return err
 	}
 
 	// 4. Process each database
+	var lastErr error
 	for _, dbRecord := range dbList {
-		processDatabase(ctx, gormDB, embeddingService, dbRecord, logger)
+		if err := processDatabase(ctx, gormDB, embeddingService, dbRecord, logger); err != nil {
+			lastErr = err
+		}
 	}
 
 	logger.Info().Msg("Completed SchemaSyncJob")
+	return lastErr
 }
 
 func processDatabase(
@@ -59,7 +63,7 @@ func processDatabase(
 	embedService *services.EmbeddingService, 
 	dbRecord models.Database, 
 	logger zerolog.Logger,
-) {
+) error {
 	log := logger.With().Str("db_name", dbRecord.Name).Str("provider", fmt.Sprintf("%d", dbRecord.Provider)).Logger()
 	log.Info().Msg("Processing database schema sync")
 
@@ -67,14 +71,14 @@ func processDatabase(
 	extractor, err := services.GetExtractorForProvider(dbRecord.Provider)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get schema extractor")
-		return
+		return err
 	}
 
 	// Extract
 	schemas, routines, err := extractor.Extract(ctx, dbRecord.ConnectionString)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to extract schema metadata")
-		return
+		return err
 	}
 
 	// Process Embeddings and Map to GORM objects
@@ -158,10 +162,12 @@ func processDatabase(
 
 	if err != nil {
 		log.Error().Err(err).Msg("Transaction failed for database schema sync")
+		return err
 	} else {
 		log.Info().
 			Int("schemas", len(schemaObjects)).
 			Int("routines", len(routineObjects)).
 			Msg("Successfully synchronized schemas")
 	}
+	return nil
 }

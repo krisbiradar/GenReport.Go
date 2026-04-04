@@ -3,8 +3,10 @@ package jobs
 import (
 	"genreport/internal/broker"
 	"genreport/internal/config"
+	"genreport/internal/services"
 
 	"github.com/go-co-op/gocron/v2"
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 )
 
@@ -39,7 +41,7 @@ var registry = []jobEntry{
 
 // RegisterAll registers all enabled background jobs with the scheduler.
 // Jobs now act as producers — they publish messages to RabbitMQ topics.
-func RegisterAll(s gocron.Scheduler, cfg config.Config, producer *broker.Producer, logger zerolog.Logger) {
+func RegisterAll(s gocron.Scheduler, cfg config.Config, producer *broker.Producer, logger zerolog.Logger, emailService *services.EmailService) {
 	for _, entry := range registry {
 		settings, ok := cfg.Jobs[entry.ConfigKey]
 		if !ok || !settings.Enabled {
@@ -49,9 +51,21 @@ func RegisterAll(s gocron.Scheduler, cfg config.Config, producer *broker.Produce
 			continue
 		}
 
+		jobConfigKey := entry.ConfigKey
+
 		_, err := s.NewJob(
 			gocron.DurationJob(settings.Interval),
 			entry.NewTask(producer, logger),
+			gocron.WithEventListeners(
+				gocron.AfterJobRunsWithError(func(jobID uuid.UUID, jobName string, err error) {
+					logger.Error().Err(err).Str("job", jobConfigKey).Msg("Job failed, removing from scheduler and sending alert")
+					s.RemoveJob(jobID)
+					if emailService != nil {
+						// Send failure alert in a goroutine to avoid blocking the scheduler event loop
+						go emailService.SendJobFailureAlert(jobConfigKey, err)
+					}
+				}),
+			),
 		)
 		if err != nil {
 			logger.Error().

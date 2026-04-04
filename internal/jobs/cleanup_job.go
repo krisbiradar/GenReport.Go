@@ -10,7 +10,7 @@ import (
 )
 
 // CleanupJob publishes a cleanup message to RabbitMQ.
-func CleanupJob(producer *broker.Producer, logger zerolog.Logger) {
+func CleanupJob(producer *broker.Producer, logger zerolog.Logger) error {
 	payload, _ := json.Marshal(map[string]interface{}{
 		"type":      "cleanup",
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
@@ -18,5 +18,7 @@ func CleanupJob(producer *broker.Producer, logger zerolog.Logger) {
 
 	if err := producer.Publish("cleanup", payload); err != nil {
 		logger.Error().Err(err).Msg("failed to publish cleanup job")
+		return err
 	}
+	return nil
 }
