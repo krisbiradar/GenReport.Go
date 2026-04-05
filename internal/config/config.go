@@ -92,7 +92,8 @@ func loadJobSettings() map[string]JobSettings {
 	defaults := []jobDefault{
 		{Key: "HEALTH_CHECK", DefaultInterval: 60},
 		{Key: "CLEANUP", DefaultInterval: 300},
-		{Key: "SCHEMA_SYNC", DefaultInterval: 86400}, // runs daily by default
+		{Key: "SCHEMA_SYNC", DefaultInterval: 86400},      // runs daily by default
+		{Key: "GENERATE_EMBEDDINGS", DefaultInterval: 3600}, // runs hourly by default
 	}
 
 	jobs := make(map[string]JobSettings, len(defaults))

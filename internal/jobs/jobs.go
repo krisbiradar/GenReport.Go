@@ -39,7 +39,13 @@ func buildRegistry() []jobEntry {
 				return gocron.NewTask(SchemaSyncJob, producer, logger, cfg)
 			},
 		},
-	}
+	},
+	{
+		ConfigKey: "GENERATE_EMBEDDINGS",
+		NewTask: func(producer *broker.Producer, logger zerolog.Logger) gocron.Task {
+			return gocron.NewTask(GenerateEmbeddingsJob, producer, logger)
+		},
+	},
 }
 
 // RegisterAll registers all enabled background jobs with the scheduler.

@@ -8,15 +8,51 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"genreport/internal/models"
 )
 
-// ─────────────────────────────────────────────────────────────────────────────
-// OpenAI Embedding Service
-// ─────────────────────────────────────────────────────────────────────────────
+// Default embedding endpoints per provider.
+// Overridden when AiConnection.BaseUrl is set.
+const (
+	defaultOpenAIBaseURL = "https://api.openai.com"
+	defaultOllamaBaseURL = "http://localhost:11434"
+)
 
-// EmbeddingService generates vector embeddings via the OpenAI API.
+// embeddingEndpoint returns the full URL for the embedding API call,
+// based on the provider and the optional BaseUrl stored on the connection.
+func embeddingEndpoint(aiConn *models.AiConnection) string {
+	base := resolveBaseURL(aiConn)
+	// Strip trailing slash for consistent joining
+	base = strings.TrimRight(base, "/")
+
+	switch strings.ToLower(aiConn.Provider) {
+	case "ollama":
+		return base + "/api/embeddings"
+	default:
+		// OpenAI-compatible (openai, azure, etc.)
+		return base + "/v1/embeddings"
+	}
+}
+
+// resolveBaseURL returns the effective base URL for the connection.
+// Uses BaseUrl from the DB record if set, otherwise falls back to
+// the provider default.
+func resolveBaseURL(aiConn *models.AiConnection) string {
+	if aiConn.BaseUrl != nil && strings.TrimSpace(*aiConn.BaseUrl) != "" {
+		return strings.TrimSpace(*aiConn.BaseUrl)
+	}
+	switch strings.ToLower(aiConn.Provider) {
+	case "ollama":
+		return defaultOllamaBaseURL
+	default:
+		return defaultOpenAIBaseURL
+	}
+}
+
+// ── Service ─────────────────────────────────────────────────────────────────
+
 type EmbeddingService struct {
 	aiConn *models.AiConnection
 	client *http.Client
@@ -29,6 +65,9 @@ func NewEmbeddingService(aiConn *models.AiConnection) *EmbeddingService {
 	}
 }
 
+// ── Request / Response shapes ────────────────────────────────────────────────
+
+// openAIEmbeddingRequest is used for OpenAI-compatible providers.
 type openAIEmbeddingRequest struct {
 	Input string `json:"input"`
 	Model string `json:"model"`
@@ -43,69 +82,132 @@ type openAIEmbeddingResponse struct {
 	} `json:"error"`
 }
 
-// GenerateEmbedding generates a 1536-dim vector embedding via OpenAI.
+// ollamaEmbeddingRequest is used for Ollama's /api/embeddings endpoint.
+type ollamaEmbeddingRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+}
+
+type ollamaEmbeddingResponse struct {
+	Embedding []float64 `json:"embedding"`
+}
+
+// ── GenerateEmbedding ────────────────────────────────────────────────────────
+
+// GenerateEmbedding generates a vector embedding for the given text using
+// the provider and endpoint configured on the AiConnection.
 func (s *EmbeddingService) GenerateEmbedding(ctx context.Context, text string) ([]float64, error) {
-	if s.aiConn == nil || s.aiConn.ApiKey == "" {
-		return nil, errors.New("no valid AI connection provided for embedding")
+	if s.aiConn == nil {
+		return nil, errors.New("no AI connection provided for embedding")
 	}
 
-	// Truncate text if it's too large (OpenAI max is ~30k chars)
+	// Truncate to avoid hitting provider token limits
 	if len(text) > 30000 {
 		text = text[:30000]
 	}
 
 	model := s.aiConn.DefaultModel
+	url := embeddingEndpoint(s.aiConn)
+
+	switch strings.ToLower(s.aiConn.Provider) {
+	case "ollama":
+		return s.callOllama(ctx, url, model, text)
+	default:
+		return s.callOpenAI(ctx, url, model, text)
+	}
+}
+
+func (s *EmbeddingService) callOpenAI(ctx context.Context, url, model, text string) ([]float64, error) {
+	if s.aiConn.ApiKey == "" {
+		return nil, errors.New("API key is required for OpenAI-compatible providers")
+	}
 	if model == "" {
 		model = "text-embedding-3-small"
 	}
 
-	reqBody := openAIEmbeddingRequest{
-		Input: text,
-		Model: model,
-	}
-
-	bodyBytes, err := json.Marshal(reqBody)
+	bodyBytes, err := json.Marshal(openAIEmbeddingRequest{Input: text, Model: model})
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal embedding request: %w", err)
+		return nil, fmt.Errorf("failed to marshal OpenAI embedding request: %w", err)
 	}
 
-	url := "https://api.openai.com/v1/embeddings"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create embedding request: %w", err)
+		return nil, fmt.Errorf("failed to create OpenAI embedding request: %w", err)
 	}
-
 	req.Header.Set("Authorization", "Bearer "+s.aiConn.ApiKey)
 	req.Header.Set("Content-Type", "application/json")
 
+	bodyData, statusCode, err := s.doRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	if statusCode != http.StatusOK {
+		return nil, fmt.Errorf("OpenAI embedding API error (status %d): %s", statusCode, string(bodyData))
+	}
+
+	var resp openAIEmbeddingResponse
+	if err := json.Unmarshal(bodyData, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal OpenAI response: %w", err)
+	}
+	if resp.Error != nil {
+		return nil, fmt.Errorf("OpenAI API error: %s", resp.Error.Message)
+	}
+	if len(resp.Data) == 0 {
+		return nil, errors.New("no embedding data returned from OpenAI")
+	}
+	return resp.Data[0].Embedding, nil
+}
+
+func (s *EmbeddingService) callOllama(ctx context.Context, url, model, text string) ([]float64, error) {
+	if model == "" {
+		model = "nomic-embed-text"
+	}
+
+	bodyBytes, err := json.Marshal(ollamaEmbeddingRequest{Model: model, Prompt: text})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal Ollama embedding request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Ollama embedding request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	// Ollama doesn't require auth, but honour ApiKey if set (e.g. behind a proxy)
+	if s.aiConn.ApiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+s.aiConn.ApiKey)
+	}
+
+	bodyData, statusCode, err := s.doRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	if statusCode != http.StatusOK {
+		return nil, fmt.Errorf("Ollama embedding API error (status %d): %s", statusCode, string(bodyData))
+	}
+
+	var resp ollamaEmbeddingResponse
+	if err := json.Unmarshal(bodyData, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal Ollama response: %w", err)
+	}
+	if len(resp.Embedding) == 0 {
+		return nil, errors.New("no embedding vector returned from Ollama")
+	}
+	return resp.Embedding, nil
+}
+
+func (s *EmbeddingService) doRequest(req *http.Request) ([]byte, int, error) {
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("HTTP request failed: %w", err)
+		return nil, 0, fmt.Errorf("HTTP request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	bodyData, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
+		return nil, resp.StatusCode, fmt.Errorf("failed to read response body: %w", err)
 	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("embedding API error (status %d): %s", resp.StatusCode, string(bodyData))
-	}
-
-	var embedResp openAIEmbeddingResponse
-	if err := json.Unmarshal(bodyData, &embedResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	if embedResp.Error != nil {
-		return nil, fmt.Errorf("API error: %s", embedResp.Error.Message)
-	}
-	if len(embedResp.Data) == 0 {
-		return nil, errors.New("no embedding data returned")
-	}
-
-	return embedResp.Data[0].Embedding, nil
+	return bodyData, resp.StatusCode, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
