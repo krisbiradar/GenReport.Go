@@ -2,9 +2,8 @@ package jobs
 
 import (
 	"encoding/json"
-	"time"
-
 	"genreport/internal/broker"
+	"time"
 
 	"github.com/rs/zerolog"
 )
