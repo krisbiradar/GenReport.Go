@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"path"
 	"strings"
-
 	"genreport/internal/config"
 	"genreport/internal/models"
 
