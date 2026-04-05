@@ -6,10 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"genreport/internal/models"
 	"io"
 	"net/http"
-
-	"genreport/internal/models"
 )
 
 type EmbeddingService struct {
