@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"genreport/internal/models"
@@ -66,32 +67,35 @@ func (e *PostgresExtractor) Extract(ctx context.Context, connString string) ([]S
 	var schemas []SchemaMetadata
 	var routines []RoutineMetadata
 
-	// 1. Tables/Views (Columns)
+	// 1. Tables/Views
 	tableRows, err := db.QueryContext(ctx, `
-		SELECT table_name, table_type, column_name, data_type 
-		FROM information_schema.columns 
-		JOIN information_schema.tables USING (table_name, table_schema)
-		WHERE table_schema NOT IN ('information_schema', 'pg_catalog') 
-		ORDER BY table_name, ordinal_position
+		SELECT table_schema, table_name, table_type
+		FROM information_schema.tables
+		WHERE table_schema NOT IN ('information_schema', 'pg_catalog')
+		  AND table_type IN ('BASE TABLE', 'VIEW')
 	`)
 	if err == nil {
 		defer tableRows.Close()
-		tableMap := make(map[string][]string)
-		typeMap := make(map[string]string)
 		for tableRows.Next() {
-			var tableName, tableType, colName, dataType string
-			if err := tableRows.Scan(&tableName, &tableType, &colName, &dataType); err == nil {
-				tableMap[tableName] = append(tableMap[tableName], fmt.Sprintf("%s %s", colName, dataType))
+			var tableSchema, tableName, tableType string
+			if err := tableRows.Scan(&tableSchema, &tableName, &tableType); err == nil {
 				t := "table"
 				if tableType == "VIEW" {
 					t = "view"
 				}
-				typeMap[tableName] = t
+
+				// Format the target name. e.g. "public.users"
+				targetObj := fmt.Sprintf("%s.%s", tableSchema, tableName)
+				
+				// Use pg_dump to extract the exact DDL
+				out, execErr := exec.CommandContext(ctx, "pg_dump", "-s", "-t", targetObj, "--no-owner", "--no-privileges", connString).Output()
+				if execErr == nil {
+					ddl := strings.TrimSpace(string(out))
+					if ddl != "" {
+						schemas = append(schemas, SchemaMetadata{Name: tableName, Type: t, SchemaText: ddl})
+					}
+				}
 			}
-		}
-		for name, cols := range tableMap {
-			schemaText := fmt.Sprintf("CREATE %s %s (\n  %s\n);", strings.ToUpper(typeMap[name]), name, strings.Join(cols, ",\n  "))
-			schemas = append(schemas, SchemaMetadata{Name: name, Type: typeMap[name], SchemaText: schemaText})
 		}
 	}
 
@@ -134,39 +138,49 @@ func (e *SQLServerExtractor) Extract(ctx context.Context, connString string) ([]
 	var schemas []SchemaMetadata
 	var routines []RoutineMetadata
 
-	// 1. Tables/Views (Columns)
+	// 1a. Tables (Columns only since OBJECT_DEFINITION doesn't support basic tables)
 	tableRows, err := db.QueryContext(ctx, `
 		SELECT t.name, 'table', c.name, type_name(c.user_type_id) 
 		FROM sys.tables t JOIN sys.columns c ON t.object_id = c.object_id
-		UNION ALL
-		SELECT v.name, 'view', c.name, type_name(c.user_type_id)
-		FROM sys.views v JOIN sys.columns c ON v.object_id = c.object_id
 	`)
 	if err == nil {
 		defer tableRows.Close()
 		tableMap := make(map[string][]string)
-		typeMap := make(map[string]string)
 		for tableRows.Next() {
 			var tableName, tableType, colName, dataType string
 			if err := tableRows.Scan(&tableName, &tableType, &colName, &dataType); err == nil {
-				tableMap[tableName] = append(tableMap[tableName], fmt.Sprintf("%s %s", colName, dataType))
-				typeMap[tableName] = tableType
+				tableMap[tableName] = append(tableMap[tableName], fmt.Sprintf("[%s] %s", colName, dataType))
 			}
 		}
 		for name, cols := range tableMap {
-			schemaText := fmt.Sprintf("CREATE %s %s (\n  %s\n);", strings.ToUpper(typeMap[name]), name, strings.Join(cols, ",\n  "))
-			schemas = append(schemas, SchemaMetadata{Name: name, Type: typeMap[name], SchemaText: schemaText})
+			schemaText := fmt.Sprintf("CREATE TABLE [%s] (\n  %s\n);", name, strings.Join(cols, ",\n  "))
+			schemas = append(schemas, SchemaMetadata{Name: name, Type: "table", SchemaText: schemaText})
 		}
 	}
 
-	// 2. Routines (Functions/Procedures)
+	// 1b. Views (Using OBJECT_DEFINITION)
+	viewRows, err := db.QueryContext(ctx, `
+		SELECT name, OBJECT_DEFINITION(object_id)
+		FROM sys.views
+	`)
+	if err == nil {
+		defer viewRows.Close()
+		for viewRows.Next() {
+			var viewName string
+			var definition sql.NullString
+			if err := viewRows.Scan(&viewName, &definition); err == nil && definition.Valid {
+				schemas = append(schemas, SchemaMetadata{Name: viewName, Type: "view", SchemaText: definition.String})
+			}
+		}
+	}
+
+	// 2. Routines (Using OBJECT_DEFINITION)
 	routineRows, err := db.QueryContext(ctx, `
-		SELECT o.name, 
-			CASE WHEN o.type = 'P' THEN 'procedure' ELSE 'function' END,
-			m.definition
-		FROM sys.objects o
-		JOIN sys.sql_modules m ON o.object_id = m.object_id
-		WHERE o.type IN ('P', 'FN', 'IF', 'TF')
+		SELECT name, 
+			CASE WHEN type = 'P' THEN 'procedure' ELSE 'function' END,
+			OBJECT_DEFINITION(object_id)
+		FROM sys.objects 
+		WHERE type IN ('P', 'FN', 'IF', 'TF')
 	`)
 	if err == nil {
 		defer routineRows.Close()
@@ -198,38 +212,31 @@ func (e *MySQLExtractor) Extract(ctx context.Context, connString string) ([]Sche
 	var schemas []SchemaMetadata
 	var routines []RoutineMetadata
 
-	// 1. Tables/Views (Columns)
-	tableRows, err := db.QueryContext(ctx, `
-		SELECT table_name, table_type, column_name, column_type 
-		FROM information_schema.columns 
-		JOIN information_schema.tables USING (table_name, table_schema)
-		WHERE table_schema = DATABASE()
-		ORDER BY table_name, ordinal_position
-	`)
+	// 1. Tables/Views
+	tableRows, err := db.QueryContext(ctx, "SHOW FULL TABLES WHERE Table_type = 'BASE TABLE' OR Table_type = 'VIEW'")
 	if err == nil {
 		defer tableRows.Close()
-		tableMap := make(map[string][]string)
-		typeMap := make(map[string]string)
 		for tableRows.Next() {
-			var tableName, tableType, colName, dataType string
-			if err := tableRows.Scan(&tableName, &tableType, &colName, &dataType); err == nil {
-				tableMap[tableName] = append(tableMap[tableName], fmt.Sprintf("%s %s", colName, dataType))
+			var tableName, tableType string
+			if err := tableRows.Scan(&tableName, &tableType); err == nil {
 				t := "table"
-				if strings.Contains(strings.ToUpper(tableType), "VIEW") {
+				query := fmt.Sprintf("SHOW CREATE TABLE `%s`", tableName)
+				if tableType == "VIEW" {
 					t = "view"
+					query = fmt.Sprintf("SHOW CREATE VIEW `%s`", tableName)
 				}
-				typeMap[tableName] = t
+				
+				ddl, err := getMySQLDDL(ctx, db, query)
+				if err == nil && ddl != "" {
+					schemas = append(schemas, SchemaMetadata{Name: tableName, Type: t, SchemaText: ddl})
+				}
 			}
-		}
-		for name, cols := range tableMap {
-			schemaText := fmt.Sprintf("CREATE %s %s (\n  %s\n);", strings.ToUpper(typeMap[name]), name, strings.Join(cols, ",\n  "))
-			schemas = append(schemas, SchemaMetadata{Name: name, Type: typeMap[name], SchemaText: schemaText})
 		}
 	}
 
 	// 2. Routines (Functions/Procedures)
 	routineRows, err := db.QueryContext(ctx, `
-		SELECT routine_name, routine_type, routine_definition 
+		SELECT routine_name, routine_type 
 		FROM information_schema.routines 
 		WHERE routine_schema = DATABASE()
 	`)
@@ -237,14 +244,56 @@ func (e *MySQLExtractor) Extract(ctx context.Context, connString string) ([]Sche
 		defer routineRows.Close()
 		for routineRows.Next() {
 			var name, rtType string
-			var definition sql.NullString
-			if err := routineRows.Scan(&name, &rtType, &definition); err == nil && definition.Valid {
-				routines = append(routines, RoutineMetadata{Name: name, Type: strings.ToLower(rtType), RoutineText: definition.String})
+			if err := routineRows.Scan(&name, &rtType); err == nil {
+				rtTypeLower := strings.ToLower(rtType)
+				query := fmt.Sprintf("SHOW CREATE %s `%s`", strings.ToUpper(rtType), name)
+				
+				ddl, err := getMySQLDDL(ctx, db, query)
+				if err == nil && ddl != "" {
+					routines = append(routines, RoutineMetadata{Name: name, Type: rtTypeLower, RoutineText: ddl})
+				}
 			}
 		}
 	}
 
 	return schemas, routines, nil
+}
+
+// Helper to pull the "Create ..." statement block natively.
+func getMySQLDDL(ctx context.Context, db *sql.DB, query string) (string, error) {
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return "", fmt.Errorf("no result")
+	}
+	cols, err := rows.Columns()
+	if err != nil {
+		return "", err
+	}
+	values := make([]interface{}, len(cols))
+	valuePtrs := make([]interface{}, len(cols))
+	for i := range values {
+		valuePtrs[i] = &values[i]
+	}
+	if err := rows.Scan(valuePtrs...); err != nil {
+		return "", err
+	}
+
+	for i, colName := range cols {
+		cn := strings.ToLower(colName)
+		if strings.HasPrefix(cn, "create ") {
+			if b, ok := values[i].([]byte); ok {
+				return string(b), nil
+			}
+			if s, ok := values[i].(string); ok {
+				return s, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("ddl column not found")
 }
 
 // ==============
@@ -260,54 +309,49 @@ func (e *OracleExtractor) Extract(ctx context.Context, connString string) ([]Sch
 	}
 	defer db.Close()
 
+	// Need to initialize dbms_metadata session params occasionally
+	_, _ = db.ExecContext(ctx, "BEGIN DBMS_METADATA.SET_TRANSFORM_PARAM(DBMS_METADATA.SESSION_TRANSFORM,'SQLTERMINATOR',true); END;")
+
 	var schemas []SchemaMetadata
 	var routines []RoutineMetadata
 
-	// 1. Tables/Views (Columns)
+	// 1. Tables/Views
 	tableRows, err := db.QueryContext(ctx, `
-		SELECT table_name, 'table', column_name, data_type 
-		FROM user_tab_columns
-		UNION ALL
-		SELECT view_name, 'view', column_name, data_type 
-		FROM user_updatable_columns
+		SELECT object_name, object_type 
+		FROM user_objects
+		WHERE object_type IN ('TABLE', 'VIEW')
 	`)
 	if err == nil {
 		defer tableRows.Close()
-		tableMap := make(map[string][]string)
-		typeMap := make(map[string]string)
 		for tableRows.Next() {
-			var tableName, tableType, colName, dataType string
-			if err := tableRows.Scan(&tableName, &tableType, &colName, &dataType); err == nil {
-				tableMap[tableName] = append(tableMap[tableName], fmt.Sprintf("%s %s", colName, dataType))
-				typeMap[tableName] = tableType
+			var objName, objType string
+			if err := tableRows.Scan(&objName, &objType); err == nil {
+				var ddl sql.NullString
+				ddlRow := db.QueryRowContext(ctx, "SELECT DBMS_METADATA.GET_DDL(:1, :2) FROM DUAL", objType, objName)
+				if err := ddlRow.Scan(&ddl); err == nil && ddl.Valid && ddl.String != "" {
+					schemas = append(schemas, SchemaMetadata{Name: objName, Type: strings.ToLower(objType), SchemaText: ddl.String})
+				}
 			}
-		}
-		for name, cols := range tableMap {
-			schemaText := fmt.Sprintf("CREATE %s %s (\n  %s\n);", strings.ToUpper(typeMap[name]), name, strings.Join(cols, ",\n  "))
-			schemas = append(schemas, SchemaMetadata{Name: name, Type: typeMap[name], SchemaText: schemaText})
 		}
 	}
 
 	// 2. Routines (Functions/Procedures)
 	routineRows, err := db.QueryContext(ctx, `
-		SELECT name, type, text 
-		FROM user_source 
-		WHERE type IN ('PROCEDURE', 'FUNCTION') 
-		ORDER BY name, line
+		SELECT object_name, object_type 
+		FROM user_objects
+		WHERE object_type IN ('PROCEDURE', 'FUNCTION')
 	`)
 	if err == nil {
 		defer routineRows.Close()
-		routineMap := make(map[string][]string)
-		typeMap := make(map[string]string)
 		for routineRows.Next() {
-			var name, rtType, text string
-			if err := routineRows.Scan(&name, &rtType, &text); err == nil {
-				routineMap[name] = append(routineMap[name], text)
-				typeMap[name] = strings.ToLower(rtType)
+			var objName, objType string
+			if err := routineRows.Scan(&objName, &objType); err == nil {
+				var ddl sql.NullString
+				ddlRow := db.QueryRowContext(ctx, "SELECT DBMS_METADATA.GET_DDL(:1, :2) FROM DUAL", objType, objName)
+				if err := ddlRow.Scan(&ddl); err == nil && ddl.Valid && ddl.String != "" {
+					routines = append(routines, RoutineMetadata{Name: objName, Type: strings.ToLower(objType), RoutineText: ddl.String})
+				}
 			}
-		}
-		for name, lines := range routineMap {
-			routines = append(routines, RoutineMetadata{Name: name, Type: typeMap[name], RoutineText: strings.Join(lines, "")})
 		}
 	}
 
