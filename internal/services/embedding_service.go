@@ -209,3 +209,93 @@ func (s *EmbeddingService) doRequest(req *http.Request) ([]byte, int, error) {
 	}
 	return bodyData, resp.StatusCode, nil
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ollama Embedding Service
+// ─────────────────────────────────────────────────────────────────────────────
+
+// OllamaEmbeddingService generates vector embeddings via a locally-running
+// Ollama instance (shipped pre-installed with the bundle).
+// Default model: nomic-embed-text (768-dim).
+type OllamaEmbeddingService struct {
+	baseURL string
+	model   string
+	client  *http.Client
+}
+
+// NewOllamaEmbeddingService creates an OllamaEmbeddingService.
+// baseURL defaults to "http://localhost:11434" if empty.
+// model defaults to "nomic-embed-text" if empty.
+func NewOllamaEmbeddingService(baseURL, model string) *OllamaEmbeddingService {
+	if baseURL == "" {
+		baseURL = "http://localhost:11434"
+	}
+	if model == "" {
+		model = "nomic-embed-text"
+	}
+	return &OllamaEmbeddingService{
+		baseURL: baseURL,
+		model:   model,
+		client:  &http.Client{},
+	}
+}
+
+type ollamaEmbeddingRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+}
+
+type ollamaEmbeddingResponse struct {
+	Embedding []float64 `json:"embedding"`
+}
+
+// GenerateEmbedding generates a 768-dim vector embedding via Ollama's local API.
+func (s *OllamaEmbeddingService) GenerateEmbedding(ctx context.Context, text string) ([]float64, error) {
+	// Truncate text to avoid overwhelming the local model
+	if len(text) > 30000 {
+		text = text[:30000]
+	}
+
+	reqBody := ollamaEmbeddingRequest{
+		Model:  s.model,
+		Prompt: text,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal ollama embedding request: %w", err)
+	}
+
+	url := s.baseURL + "/api/embeddings"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ollama embedding request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("ollama HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read ollama response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ollama embedding API error (status %d): %s", resp.StatusCode, string(bodyData))
+	}
+
+	var embedResp ollamaEmbeddingResponse
+	if err := json.Unmarshal(bodyData, &embedResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal ollama response: %w", err)
+	}
+
+	if len(embedResp.Embedding) == 0 {
+		return nil, errors.New("no embedding data returned from ollama")
+	}
+
+	return embedResp.Embedding, nil
+}

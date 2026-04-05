@@ -5,12 +5,14 @@ import (
 	"fmt"
 
 	"genreport/internal/broker"
+	"genreport/internal/config"
 	"genreport/internal/database"
 	"genreport/internal/models"
 	"genreport/internal/services"
 
 	"github.com/rs/zerolog"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // SchemaSyncJob iterates through all stored databases across all supported providers,
@@ -89,7 +91,8 @@ func syncDatabaseSchema(
 		})
 	}
 
-	var routineObjects []models.RoutineObject
+	// ── Build routine objects ─────────────────────────────────────────────────
+	routineObjects := make([]models.RoutineObject, 0, len(routines))
 	for _, rm := range routines {
 		text := rm.RoutineText
 		routineObjects = append(routineObjects, models.RoutineObject{
@@ -112,13 +115,39 @@ func syncDatabaseSchema(
 		}
 
 		if len(schemaObjects) > 0 {
-			if err := tx.CreateInBatches(schemaObjects, 100).Error; err != nil {
-				return fmt.Errorf("failed to insert schema objects: %w", err)
+			result := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{
+					{Name: "database_id"},
+					{Name: "name"},
+					{Name: "type"},
+				},
+				DoUpdates: clause.AssignmentColumns([]string{
+					"embedding",
+					"embedding_ollama",
+					"embedding_text",
+					"full_schema",
+				}),
+			}).CreateInBatches(schemaObjects, 100)
+			if result.Error != nil {
+				return fmt.Errorf("failed to upsert schema objects: %w", result.Error)
 			}
 		}
 		if len(routineObjects) > 0 {
-			if err := tx.CreateInBatches(routineObjects, 100).Error; err != nil {
-				return fmt.Errorf("failed to insert routine objects: %w", err)
+			result := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{
+					{Name: "database_id"},
+					{Name: "name"},
+					{Name: "type"},
+				},
+				DoUpdates: clause.AssignmentColumns([]string{
+					"embedding",
+					"embedding_ollama",
+					"embedding_text",
+					"full_schema",
+				}),
+			}).CreateInBatches(routineObjects, 100)
+			if result.Error != nil {
+				return fmt.Errorf("failed to upsert routine objects: %w", result.Error)
 			}
 		}
 
