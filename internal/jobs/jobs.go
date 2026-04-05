@@ -68,6 +68,7 @@ func RegisterAll(s gocron.Scheduler, cfg config.Config, producer *broker.Produce
 		_, err := s.NewJob(
 			gocron.DurationJob(settings.Interval),
 			entry.NewTask(cfg, producer, logger),
+			gocron.WithStartAt(gocron.WithStartImmediately()),
 			gocron.WithEventListeners(
 				gocron.AfterJobRunsWithError(func(jobID uuid.UUID, _ string, jobErr error) {
 					logger.Error().Err(jobErr).Str("job", jobConfigKey).Msg("job failed — disabling and sending alert")

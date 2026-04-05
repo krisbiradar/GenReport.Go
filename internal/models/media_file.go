@@ -4,7 +4,7 @@ import "time"
 
 // MediaFile maps to the "mediafiles" table.
 type MediaFile struct {
-	ID         int64     `gorm:"column:id;primaryKey"`
+	ID         int64     `gorm:"column:Id;primaryKey"`
 	StorageURL *string   `gorm:"column:storage_url"`
 	FileName   string    `gorm:"column:file_name;not null;uniqueIndex:idx_mediafiles_file_name"`
 	MimeType   string    `gorm:"column:mime_type;not null"`

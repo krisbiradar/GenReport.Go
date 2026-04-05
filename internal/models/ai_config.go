@@ -4,7 +4,7 @@ import "time"
 
 // AiConfig maps to the "ai_configs" table.
 type AiConfig struct {
-	ID             int64        `gorm:"column:id;primaryKey"`
+	ID             int64        `gorm:"column:Id;primaryKey"`
 	Type           AiConfigType `gorm:"column:type;not null;index:idx_ai_configs_type"`
 	Value          string       `gorm:"column:value;type:text;not null"`
 	AiConnectionID int64        `gorm:"column:ai_connection_id;not null"`

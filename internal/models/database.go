@@ -4,7 +4,7 @@ import "time"
 
 // Database maps to the "databases" table.
 type Database struct {
-	ID                    int64      `gorm:"column:id;primaryKey"`
+	ID                    int64      `gorm:"column:Id;primaryKey"`
 	Name                  string     `gorm:"column:name;size:255;not null"`
 	DatabaseAlias         string     `gorm:"column:database_alias;size:255;not null"`
 	Type                  string     `gorm:"column:type;size:50;not null"`

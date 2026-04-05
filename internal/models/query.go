@@ -8,7 +8,7 @@ import (
 
 // Query maps to the "queries" table.
 type Query struct {
-	ID              int64          `gorm:"column:id;primaryKey"`
+	ID              int64          `gorm:"column:Id;primaryKey"`
 	Rawtext         string         `gorm:"column:rawtext"`
 	DatabaseID      int64          `gorm:"column:database_id"`
 	CreatedByID     int64          `gorm:"column:created_by_id"`

@@ -4,7 +4,7 @@ import "time"
 
 // User maps to the "users" table.
 type User struct {
-	ID         int64      `gorm:"column:id;primaryKey"`
+	ID         int64      `gorm:"column:Id;primaryKey"`
 	Password   string     `gorm:"column:password"`
 	Email      string     `gorm:"column:email;index:idx_users_email"`
 	FirstName  string     `gorm:"column:first_name;index:idx_users_first_name"`

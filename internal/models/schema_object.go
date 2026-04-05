@@ -3,7 +3,7 @@ package models
 // SchemaObject maps to the "schema_objects" table.
 // Represents a table or view from a database with its vector embedding.
 type SchemaObject struct {
-	ID            int64     `gorm:"column:id;primaryKey"`
+	ID            int64     `gorm:"column:Id;primaryKey"`
 	DatabaseID    int64     `gorm:"column:database_id;not null"`
 	Name          string    `gorm:"column:name;size:255;not null"`
 	Type          string    `gorm:"column:type;size:10;not null"`

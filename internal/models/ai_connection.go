@@ -4,7 +4,7 @@ import "time"
 
 // AiConnection maps to the "ai_connections" table.
 type AiConnection struct {
-	ID                    int64     `gorm:"column:id;primaryKey"`
+	ID                    int64     `gorm:"column:Id;primaryKey"`
 	Provider              string    `gorm:"column:provider;size:100;not null"`
 	ApiKey                string    `gorm:"column:api_key;type:text;not null"`
 	BaseUrl               *string   `gorm:"column:base_url;type:text"`

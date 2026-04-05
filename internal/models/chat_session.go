@@ -4,7 +4,7 @@ import "time"
 
 // ChatSession maps to the "chat_sessions" table.
 type ChatSession struct {
-	ID        int64         `gorm:"column:id;primaryKey"`
+	ID        int64         `gorm:"column:Id;primaryKey"`
 	UserID    int64         `gorm:"column:user_id"`
 	Title          *string       `gorm:"column:title;size:255"`
 	AiConnectionID *int64        `gorm:"column:ai_connection_id"`
