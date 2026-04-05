@@ -19,7 +19,7 @@ type jobEntry struct {
 
 // buildRegistry returns the full list of background job entries.
 // Constructed at registration time so cfg is available to all closures.
-func buildRegistry(cfg config.Config) []jobEntry {
+func buildRegistry() []jobEntry {
 	return []jobEntry{
 		{
 			ConfigKey: "HEALTH_CHECK",
