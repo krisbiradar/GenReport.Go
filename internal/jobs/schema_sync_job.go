@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"genreport/internal/broker"
-	"genreport/internal/config"
 	"genreport/internal/database"
 	"genreport/internal/models"
 	"genreport/internal/services"

@@ -240,15 +240,6 @@ func NewOllamaEmbeddingService(baseURL, model string) *OllamaEmbeddingService {
 	}
 }
 
-type ollamaEmbeddingRequest struct {
-	Model  string `json:"model"`
-	Prompt string `json:"prompt"`
-}
-
-type ollamaEmbeddingResponse struct {
-	Embedding []float64 `json:"embedding"`
-}
-
 // GenerateEmbedding generates a 768-dim vector embedding via Ollama's local API.
 func (s *OllamaEmbeddingService) GenerateEmbedding(ctx context.Context, text string) ([]float64, error) {
 	// Truncate text to avoid overwhelming the local model

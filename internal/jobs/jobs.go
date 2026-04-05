@@ -39,19 +39,19 @@ func buildRegistry() []jobEntry {
 				return gocron.NewTask(SchemaSyncJob, producer, logger, cfg)
 			},
 		},
-	},
-	{
-		ConfigKey: "GENERATE_EMBEDDINGS",
-		NewTask: func(producer *broker.Producer, logger zerolog.Logger) gocron.Task {
-			return gocron.NewTask(GenerateEmbeddingsJob, producer, logger)
+		{
+			ConfigKey: "GENERATE_EMBEDDINGS",
+			NewTask: func(cfg config.Config, producer *broker.Producer, logger zerolog.Logger) gocron.Task {
+				return gocron.NewTask(GenerateEmbeddingsJob, producer, logger, cfg)
+			},
 		},
-	},
+	}
 }
 
 // RegisterAll registers all enabled background jobs with the scheduler.
 // Jobs now act as producers — they publish messages to RabbitMQ topics.
 func RegisterAll(s gocron.Scheduler, cfg config.Config, producer *broker.Producer, logger zerolog.Logger, emailService *services.EmailService) {
-	registry := buildRegistry(cfg)
+	registry := buildRegistry()
 
 	for _, entry := range registry {
 		settings, ok := cfg.Jobs[entry.ConfigKey]
