@@ -10,38 +10,43 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// jobEntry maps a config key to its task function.
+// jobEntry maps a config key to its task constructor.
+// The constructor receives cfg so jobs can read runtime configuration.
 type jobEntry struct {
 	ConfigKey string
-	NewTask   func(producer *broker.Producer, logger zerolog.Logger) gocron.Task
+	NewTask   func(cfg config.Config, producer *broker.Producer, logger zerolog.Logger) gocron.Task
 }
 
-// registry lists all available background jobs (producers).
-// To add a new job, append an entry here and add its config in config.Load().
-var registry = []jobEntry{
-	{
-		ConfigKey: "HEALTH_CHECK",
-		NewTask: func(producer *broker.Producer, logger zerolog.Logger) gocron.Task {
-			return gocron.NewTask(HealthCheckJob, producer, logger)
+// buildRegistry returns the full list of background job entries.
+// Constructed at registration time so cfg is available to all closures.
+func buildRegistry(cfg config.Config) []jobEntry {
+	return []jobEntry{
+		{
+			ConfigKey: "HEALTH_CHECK",
+			NewTask: func(cfg config.Config, producer *broker.Producer, logger zerolog.Logger) gocron.Task {
+				return gocron.NewTask(HealthCheckJob, producer, logger)
+			},
 		},
-	},
-	{
-		ConfigKey: "CLEANUP",
-		NewTask: func(producer *broker.Producer, logger zerolog.Logger) gocron.Task {
-			return gocron.NewTask(CleanupJob, producer, logger)
+		{
+			ConfigKey: "CLEANUP",
+			NewTask: func(cfg config.Config, producer *broker.Producer, logger zerolog.Logger) gocron.Task {
+				return gocron.NewTask(CleanupJob, producer, logger)
+			},
 		},
-	},
-	{
-		ConfigKey: "SCHEMA_SYNC",
-		NewTask: func(producer *broker.Producer, logger zerolog.Logger) gocron.Task {
-			return gocron.NewTask(SchemaSyncJob, producer, logger)
+		{
+			ConfigKey: "SCHEMA_SYNC",
+			NewTask: func(cfg config.Config, producer *broker.Producer, logger zerolog.Logger) gocron.Task {
+				return gocron.NewTask(SchemaSyncJob, producer, logger, cfg)
+			},
 		},
-	},
+	}
 }
 
 // RegisterAll registers all enabled background jobs with the scheduler.
 // Jobs now act as producers — they publish messages to RabbitMQ topics.
 func RegisterAll(s gocron.Scheduler, cfg config.Config, producer *broker.Producer, logger zerolog.Logger, emailService *services.EmailService) {
+	registry := buildRegistry(cfg)
+
 	for _, entry := range registry {
 		settings, ok := cfg.Jobs[entry.ConfigKey]
 		if !ok || !settings.Enabled {
@@ -56,7 +61,7 @@ func RegisterAll(s gocron.Scheduler, cfg config.Config, producer *broker.Produce
 
 		_, err := s.NewJob(
 			gocron.DurationJob(settings.Interval),
-			entry.NewTask(producer, logger),
+			entry.NewTask(cfg, producer, logger),
 			gocron.WithEventListeners(
 				gocron.AfterJobRunsWithError(func(jobID uuid.UUID, _ string, jobErr error) {
 					logger.Error().Err(jobErr).Str("job", jobConfigKey).Msg("job failed — disabling and sending alert")

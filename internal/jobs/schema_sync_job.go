@@ -6,150 +6,196 @@ import (
 	"fmt"
 
 	"genreport/internal/broker"
+	"genreport/internal/config"
 	"genreport/internal/database"
 	"genreport/internal/models"
 	"genreport/internal/services"
 
 	"github.com/rs/zerolog"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // SchemaSyncJob iterates through all stored databases, extracts their schemas/routines,
-// generates their vector embeddings, and persists them into the central database.
-func SchemaSyncJob(producer *broker.Producer, logger zerolog.Logger) {
+// generates vector embeddings using both OpenAI (if configured) and Ollama (local),
+// and persists them into the central database via upsert.
+func SchemaSyncJob(producer *broker.Producer, logger zerolog.Logger, cfg config.Config) error {
 	logger.Info().Msg("Starting SchemaSyncJob")
 	ctx := context.Background()
 
 	// 1. Get the local database connection
 	gormDB := database.GetDB()
 	if gormDB == nil {
-		logger.Error().Msg("Failed to get gorm connection; aborting SchemaSyncJob")
-		return
+		return fmt.Errorf("failed to get gorm connection; aborting SchemaSyncJob")
 	}
 
-	// 2. Load the active AI connection for embeddings
+	// 2. Load the active AI connection for OpenAI embeddings (optional)
+	var openAISvc *services.EmbeddingService
 	var activeAiConn models.AiConnection
-	err := gormDB.Where("is_active = ?", true).First(&activeAiConn).Error
-	var embeddingService *services.EmbeddingService
-	if err == nil {
-		embeddingService = services.NewEmbeddingService(&activeAiConn)
-		logger.Info().Str("provider", activeAiConn.Provider).Msg("Loaded AI connection for embedding")
+	if err := gormDB.Where("is_active = ?", true).First(&activeAiConn).Error; err == nil {
+		openAISvc = services.NewEmbeddingService(&activeAiConn)
+		logger.Info().Str("provider", activeAiConn.Provider).Msg("Loaded AI connection for OpenAI embedding")
 	} else {
-		logger.Warn().Err(err).Msg("No active AI connection found; will skip vector embedding generation")
+		logger.Warn().Err(err).Msg("No active AI connection found; OpenAI embeddings will be skipped")
 	}
 
-	// 3. Fetch all shared databases
+	// 3. Instantiate Ollama embedding service (always attempted — local instance)
+	ollamaSvc := services.NewOllamaEmbeddingService(cfg.Ollama.BaseURL, cfg.Ollama.EmbeddingModel)
+	logger.Info().
+		Str("baseURL", cfg.Ollama.BaseURL).
+		Str("model", cfg.Ollama.EmbeddingModel).
+		Msg("Ollama embedding service initialized")
+
+	// 4. Fetch all shared databases
 	var dbList []models.Database
 	if err := gormDB.Find(&dbList).Error; err != nil {
-		logger.Error().Err(err).Msg("Failed to fetch databases")
-		return
+		return fmt.Errorf("failed to fetch databases: %w", err)
 	}
 
-	// 4. Process each database
+	// 5. Process each database
+	var lastErr error
 	for _, dbRecord := range dbList {
-		processDatabase(ctx, gormDB, embeddingService, dbRecord, logger)
+		if err := processDatabase(ctx, gormDB, openAISvc, ollamaSvc, dbRecord, logger); err != nil {
+			logger.Error().Err(err).Str("db_name", dbRecord.Name).Msg("Failed to process database")
+			lastErr = err
+		}
 	}
 
 	logger.Info().Msg("Completed SchemaSyncJob")
+	return lastErr
 }
 
 func processDatabase(
-	ctx context.Context, 
-	gormDB *gorm.DB, 
-	embedService *services.EmbeddingService, 
-	dbRecord models.Database, 
+	ctx context.Context,
+	gormDB *gorm.DB,
+	openAISvc *services.EmbeddingService,
+	ollamaSvc *services.OllamaEmbeddingService,
+	dbRecord models.Database,
 	logger zerolog.Logger,
-) {
+) error {
 	log := logger.With().Str("db_name", dbRecord.Name).Str("provider", fmt.Sprintf("%d", dbRecord.Provider)).Logger()
 	log.Info().Msg("Processing database schema sync")
 
 	// Get extractor
 	extractor, err := services.GetExtractorForProvider(dbRecord.Provider)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to get schema extractor")
-		return
+		return fmt.Errorf("failed to get schema extractor: %w", err)
 	}
 
-	// Extract
+	// Extract schema metadata
 	schemas, routines, err := extractor.Extract(ctx, dbRecord.ConnectionString)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to extract schema metadata")
-		return
+		return fmt.Errorf("failed to extract schema metadata: %w", err)
 	}
 
-	// Process Embeddings and Map to GORM objects
-	var schemaObjects []models.SchemaObject
+	// ── Build schema objects ──────────────────────────────────────────────────
+	schemaObjects := make([]models.SchemaObject, 0, len(schemas))
 	for _, sm := range schemas {
-		obj := models.SchemaObject{
-			DatabaseID: dbRecord.ID,
-			Name:       sm.Name,
-			Type:       sm.Type,
-		}
-		
 		text := sm.SchemaText
-		obj.FullSchema = &text
-		obj.EmbeddingText = &text
+		obj := models.SchemaObject{
+			DatabaseID:    dbRecord.ID,
+			Name:          sm.Name,
+			Type:          sm.Type,
+			FullSchema:    &text,
+			EmbeddingText: &text,
+		}
 
-		if embedService != nil {
-			vec, err := embedService.GenerateEmbedding(ctx, sm.SchemaText)
+		// OpenAI embedding (vector 1536)
+		if openAISvc != nil {
+			vec, err := openAISvc.GenerateEmbedding(ctx, sm.SchemaText)
 			if err != nil {
-				log.Warn().Err(err).Str("schema", sm.Name).Msg("Failed to generate embedding")
+				log.Warn().Err(err).Str("schema", sm.Name).Msg("OpenAI embedding failed for schema object")
 			} else {
-				// Convert to string format used by pgvector: [0.1, 0.2, ...]
-				vecBytes, _ := json.Marshal(vec)
-				vecStr := string(vecBytes)
+				vecStr := vecToString(vec)
 				obj.Embedding = &vecStr
 			}
 		}
+
+		// Ollama embedding (vector 768)
+		vec, err := ollamaSvc.GenerateEmbedding(ctx, sm.SchemaText)
+		if err != nil {
+			log.Warn().Err(err).Str("schema", sm.Name).Msg("Ollama embedding failed for schema object")
+		} else {
+			vecStr := vecToString(vec)
+			obj.EmbeddingOllama = &vecStr
+		}
+
 		schemaObjects = append(schemaObjects, obj)
 	}
 
-	var routineObjects []models.RoutineObject
+	// ── Build routine objects ─────────────────────────────────────────────────
+	routineObjects := make([]models.RoutineObject, 0, len(routines))
 	for _, rm := range routines {
+		text := rm.RoutineText
 		obj := models.RoutineObject{
-			DatabaseID: dbRecord.ID,
-			Name:       rm.Name,
-			Type:       rm.Type,
+			DatabaseID:    dbRecord.ID,
+			Name:          rm.Name,
+			Type:          rm.Type,
+			FullSchema:    &text,
+			EmbeddingText: &text,
 		}
 
-		text := rm.RoutineText
-		obj.FullSchema = &text
-		obj.EmbeddingText = &text
-
-		if embedService != nil {
-			vec, err := embedService.GenerateEmbedding(ctx, rm.RoutineText)
+		// OpenAI embedding (vector 1536)
+		if openAISvc != nil {
+			vec, err := openAISvc.GenerateEmbedding(ctx, rm.RoutineText)
 			if err != nil {
-				log.Warn().Err(err).Str("routine", rm.Name).Msg("Failed to generate embedding")
+				log.Warn().Err(err).Str("routine", rm.Name).Msg("OpenAI embedding failed for routine object")
 			} else {
-				vecBytes, _ := json.Marshal(vec)
-				vecStr := string(vecBytes)
+				vecStr := vecToString(vec)
 				obj.Embedding = &vecStr
 			}
 		}
+
+		// Ollama embedding (vector 768)
+		vec, err := ollamaSvc.GenerateEmbedding(ctx, rm.RoutineText)
+		if err != nil {
+			log.Warn().Err(err).Str("routine", rm.Name).Msg("Ollama embedding failed for routine object")
+		} else {
+			vecStr := vecToString(vec)
+			obj.EmbeddingOllama = &vecStr
+		}
+
 		routineObjects = append(routineObjects, obj)
 	}
 
-	// Begin Transaction to replace schemas
+	// ── Upsert in a single transaction ───────────────────────────────────────
+	// ON CONFLICT (database_id, name, type) → update embedding columns + text
 	err = gormDB.Transaction(func(tx *gorm.DB) error {
-		// 1. Delete existing records for this DB
-		if err := tx.Where("database_id = ?", dbRecord.ID).Delete(&models.SchemaObject{}).Error; err != nil {
-			return fmt.Errorf("failed to delete old schema objects: %w", err)
-		}
-		if err := tx.Where("database_id = ?", dbRecord.ID).Delete(&models.RoutineObject{}).Error; err != nil {
-			return fmt.Errorf("failed to delete old routine objects: %w", err)
-		}
-
-		// 2. Insert new schema objects
 		if len(schemaObjects) > 0 {
-			if err := tx.CreateInBatches(schemaObjects, 100).Error; err != nil {
-				return fmt.Errorf("failed to insert schema objects: %w", err)
+			result := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{
+					{Name: "database_id"},
+					{Name: "name"},
+					{Name: "type"},
+				},
+				DoUpdates: clause.AssignmentColumns([]string{
+					"embedding",
+					"embedding_ollama",
+					"embedding_text",
+					"full_schema",
+				}),
+			}).CreateInBatches(schemaObjects, 100)
+			if result.Error != nil {
+				return fmt.Errorf("failed to upsert schema objects: %w", result.Error)
 			}
 		}
 
-		// 3. Insert new routine objects
 		if len(routineObjects) > 0 {
-			if err := tx.CreateInBatches(routineObjects, 100).Error; err != nil {
-				return fmt.Errorf("failed to insert routine objects: %w", err)
+			result := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{
+					{Name: "database_id"},
+					{Name: "name"},
+					{Name: "type"},
+				},
+				DoUpdates: clause.AssignmentColumns([]string{
+					"embedding",
+					"embedding_ollama",
+					"embedding_text",
+					"full_schema",
+				}),
+			}).CreateInBatches(routineObjects, 100)
+			if result.Error != nil {
+				return fmt.Errorf("failed to upsert routine objects: %w", result.Error)
 			}
 		}
 
@@ -158,10 +204,19 @@ func processDatabase(
 
 	if err != nil {
 		log.Error().Err(err).Msg("Transaction failed for database schema sync")
-	} else {
-		log.Info().
-			Int("schemas", len(schemaObjects)).
-			Int("routines", len(routineObjects)).
-			Msg("Successfully synchronized schemas")
+		return err
 	}
+
+	log.Info().
+		Int("schemas", len(schemaObjects)).
+		Int("routines", len(routineObjects)).
+		Msg("Successfully synchronized schemas")
+
+	return nil
+}
+
+// vecToString converts a float64 slice to a pgvector-compatible string: [0.1,0.2,...]
+func vecToString(vec []float64) string {
+	b, _ := json.Marshal(vec)
+	return string(b)
 }

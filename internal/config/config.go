@@ -30,6 +30,11 @@ type SMTPConfig struct {
 	From     string
 }
 
+type OllamaConfig struct {
+	BaseURL        string // OLLAMA_BASE_URL, default: http://localhost:11434
+	EmbeddingModel string // OLLAMA_EMBEDDING_MODEL, default: nomic-embed-text
+}
+
 type Config struct {
 	Port               string
 	DatabaseURL        string
@@ -42,6 +47,7 @@ type Config struct {
 	Jobs               map[string]JobSettings
 	R2                 R2Config
 	SMTP               SMTPConfig
+	Ollama             OllamaConfig
 }
 
 func Load() Config {
@@ -68,6 +74,10 @@ func Load() Config {
 			Username: readString("SMTP_USERNAME", ""),
 			Password: readString("SMTP_PASSWORD", ""),
 			From:     readString("SMTP_FROM", ""),
+		},
+		Ollama: OllamaConfig{
+			BaseURL:        readString("OLLAMA_BASE_URL", "http://localhost:11434"),
+			EmbeddingModel: readString("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text"),
 		},
 	}
 }

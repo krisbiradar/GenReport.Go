@@ -10,6 +10,7 @@ type RoutineObject struct {
 	EmbeddingText *string   `gorm:"column:embedding_text"`
 	FullSchema    *string   `gorm:"column:full_schema"`
 	Embedding     *string   `gorm:"column:embedding;type:vector(1536)"`
+	EmbeddingOllama *string `gorm:"column:embedding_ollama;type:vector(768)"`
 	Metadata      *string   `gorm:"column:metadata;type:jsonb"`
 	Database      *Database `gorm:"foreignKey:DatabaseID"`
 }
