@@ -3,10 +3,13 @@ package jobs
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"genreport/internal/broker"
+	"genreport/internal/config"
 	"genreport/internal/database"
 	"genreport/internal/models"
+	"genreport/internal/security"
 	"genreport/internal/services"
 
 	"github.com/rs/zerolog"
@@ -17,7 +20,7 @@ import (
 // SchemaSyncJob iterates through all stored databases across all supported providers,
 // extracts their schema text (tables, views, SPs, functions) and persists them into
 // the central database. Embeddings are left nil — run GenerateEmbeddingsJob separately.
-func SchemaSyncJob(producer *broker.Producer, logger zerolog.Logger) error {
+func SchemaSyncJob(cfg config.Config, producer *broker.Producer, logger zerolog.Logger) error {
 	logger.Info().Msg("Starting SchemaSyncJob")
 	ctx := context.Background()
 
@@ -39,7 +42,7 @@ func SchemaSyncJob(producer *broker.Producer, logger zerolog.Logger) error {
 	// 3. Process each database
 	var lastErr error
 	for _, dbRecord := range dbList {
-		if err := syncDatabaseSchema(ctx, gormDB, dbRecord, logger); err != nil {
+		if err := syncDatabaseSchema(ctx, gormDB, dbRecord, logger, cfg.EncryptionMasterKey); err != nil {
 			lastErr = err
 		}
 	}
@@ -53,13 +56,8 @@ func SchemaSyncJob(producer *broker.Producer, logger zerolog.Logger) error {
 	return nil
 }
 
-func syncDatabaseSchema(
-	ctx context.Context,
-	gormDB *gorm.DB,
-	dbRecord models.Database,
-	logger zerolog.Logger,
-) error {
-	log := logger.With().Str("db_name", dbRecord.Name).Str("provider", fmt.Sprintf("%d", dbRecord.Provider)).Logger()
+func syncDatabaseSchema(ctx context.Context, gormDB *gorm.DB, dbRecord models.Database, logger zerolog.Logger, masterKey string) error {
+	log := logger.With().Str("db_name", dbRecord.Name).Int("provider", int(dbRecord.Provider)).Logger()
 	log.Info().Msg("Syncing database schema")
 
 	// Get extractor for this provider
@@ -69,8 +67,18 @@ func syncDatabaseSchema(
 		return err
 	}
 
+	connString := dbRecord.ConnectionString
+	if masterKey != "" && len(connString) > 20 && !strings.Contains(connString, "host=") && !strings.Contains(connString, "://") && !strings.Contains(connString, "Server=") {
+		// Attempt to decrypt. Try common credential types used in C#
+		if dec, err := security.Decrypt(connString, "ConnectionString", masterKey); err == nil && dec != "" {
+			connString = dec
+		} else if dec, err := security.Decrypt(connString, "DatabaseConnectionString", masterKey); err == nil && dec != "" {
+			connString = dec
+		}
+	}
+
 	// Extract schema metadata
-	schemas, routines, err := extractor.Extract(ctx, dbRecord.ConnectionString)
+	schemas, routines, err := extractor.Extract(ctx, connString)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to extract schema metadata")
 		return err

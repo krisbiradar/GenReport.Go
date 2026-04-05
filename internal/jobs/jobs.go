@@ -36,7 +36,7 @@ func buildRegistry() []jobEntry {
 		{
 			ConfigKey: "SCHEMA_SYNC",
 			NewTask: func(cfg config.Config, producer *broker.Producer, logger zerolog.Logger) gocron.Task {
-				return gocron.NewTask(SchemaSyncJob, producer, logger)
+				return gocron.NewTask(SchemaSyncJob, cfg, producer, logger)
 			},
 		},
 		{

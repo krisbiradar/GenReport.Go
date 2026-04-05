@@ -15,20 +15,21 @@ import (
 	"gorm.io/gorm"
 
 	"genreport/internal/broker"
+	"genreport/internal/config"
 	"genreport/internal/models"
 	"genreport/internal/security"
 )
 
 // HandleSchemaCopy creates a handler for duplicating database schemas into [DbName]_blank schemas.
-func HandleSchemaCopy(logger zerolog.Logger, db *gorm.DB) broker.JobHandler {
+func HandleSchemaCopy(cfg config.Config, logger zerolog.Logger, db *gorm.DB) broker.JobHandler {
 	return func(payload []byte) error {
 		ctx := context.Background()
 		logger.Info().Msg("starting schema copy job")
 
-		masterKey := os.Getenv("ENCRYPTION_MASTER_KEY")
+		masterKey := cfg.EncryptionMasterKey
 		if masterKey == "" {
-			logger.Error().Msg("ENCRYPTION_MASTER_KEY is not set. Cannot run schema copy.")
-			return fmt.Errorf("ENCRYPTION_MASTER_KEY environment variable is not set")
+			logger.Error().Msg("EncryptionMasterKey is not configured. Cannot run schema copy.")
+			return fmt.Errorf("EncryptionMasterKey configuration is not set")
 		}
 
 		var databases []models.Database

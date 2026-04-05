@@ -48,6 +48,7 @@ type Config struct {
 	R2                 R2Config
 	SMTP               SMTPConfig
 	Ollama             OllamaConfig
+	EncryptionMasterKey string
 }
 
 func Load() Config {
@@ -79,6 +80,7 @@ func Load() Config {
 			BaseURL:        readString("OLLAMA_BASE_URL", "http://localhost:11434"),
 			EmbeddingModel: readString("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text"),
 		},
+		EncryptionMasterKey: readString("ENCRYPTION_MASTER_KEY", ""),
 	}
 }
 

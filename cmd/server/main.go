@@ -56,7 +56,7 @@ func main() {
 
 	// Start one worker per topic
 	done := make(chan struct{})
-	for _, w := range workers.All(logger, gormDB) {
+	for _, w := range workers.All(cfg, logger, gormDB) {
 		if err := consumer.StartWorker(w.Topic, w.Handler, done); err != nil {
 			logger.Fatal().Err(err).Str("topic", w.Topic).Msg("failed to start worker")
 		}
