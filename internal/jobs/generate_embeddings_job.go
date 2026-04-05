@@ -145,7 +145,12 @@ func generateRoutineEmbeddings(
 			continue
 		}
 
-		vecBytes, _ := json.Marshal(vec)
+		vecBytes, err := json.Marshal(vec)
+		if err != nil {
+			logger.Warn().Err(err).Int64("id", obj.ID).Str("name", obj.Name).Msg("Failed to marshal embedding vector")
+			failed++
+			continue
+		}
 		vecStr := string(vecBytes)
 
 		if err := gormDB.Model(&models.RoutineObject{}).
