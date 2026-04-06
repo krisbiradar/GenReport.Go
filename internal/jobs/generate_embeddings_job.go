@@ -15,11 +15,12 @@ import (
 )
 
 // GenerateEmbeddingsJob reads all schema and routine objects and (re)generates their
-// vector embeddings using the active AI connection. This job is intentionally separate
-// from SchemaSyncJob so that schema structure and embeddings can be scheduled and
-// monitored independently.
+// vector embeddings using the local Ollama nomic-embed-text model (768-dim).
+// Embedding generation is always local — no OpenAI calls, no cost.
+// Results are stored in the embedding_ollama column.
 //
-// This job overwrites all existing embeddings on every run.
+// This job is intentionally separate from SchemaSyncJob so that schema structure
+// and embeddings can be scheduled and monitored independently.
 func GenerateEmbeddingsJob(producer *broker.Producer, logger zerolog.Logger) error {
 	logger.Info().Msg("Starting GenerateEmbeddingsJob")
 	ctx := context.Background()
@@ -32,22 +33,17 @@ func GenerateEmbeddingsJob(producer *broker.Producer, logger zerolog.Logger) err
 		return err
 	}
 
-	// 2. Load active AI connection — required for this job
-	var activeAiConn models.AiConnection
-	if err := gormDB.Where("is_active = ?", true).First(&activeAiConn).Error; err != nil {
-		err = fmt.Errorf("no active AI connection found: %w", err)
-		logger.Error().Err(err).Msg("Cannot generate embeddings without an active AI connection")
-		return err
-	}
-
-	embedService := services.NewEmbeddingService(&activeAiConn)
-	logger.Info().Str("provider", activeAiConn.Provider).Msg("Loaded AI connection for embedding")
+	// 2. Always use local Ollama (nomic-embed-text, 768-dim) — zero cost, no API key needed.
+	//    Results go into the embedding_ollama column.
+	embedService := services.NewOllamaEmbeddingService("", "") // defaults: localhost:11434, nomic-embed-text
+	const embeddingCol = "embedding_ollama"
+	logger.Info().Str("model", "nomic-embed-text").Str("column", embeddingCol).Msg("Using local Ollama for embeddings")
 
 	// 3. Generate embeddings for schema objects (all rows — overwrite existing)
-	schemaUpdated, schemaFailed := generateSchemaEmbeddings(ctx, gormDB, embedService, logger)
+	schemaUpdated, schemaFailed := generateSchemaEmbeddings(ctx, gormDB, embedService, embeddingCol, logger)
 
 	// 4. Generate embeddings for routine objects (all rows — overwrite existing)
-	routineUpdated, routineFailed := generateRoutineEmbeddings(ctx, gormDB, embedService, logger)
+	routineUpdated, routineFailed := generateRoutineEmbeddings(ctx, gormDB, embedService, embeddingCol, logger)
 
 	logger.Info().
 		Int("schema_updated", schemaUpdated).
@@ -65,7 +61,8 @@ func GenerateEmbeddingsJob(producer *broker.Producer, logger zerolog.Logger) err
 func generateSchemaEmbeddings(
 	ctx context.Context,
 	gormDB *gorm.DB,
-	embedService *services.EmbeddingService,
+	embedService *services.OllamaEmbeddingService,
+	embeddingCol string,
 	logger zerolog.Logger,
 ) (updated, failed int) {
 	var objects []models.SchemaObject
@@ -100,10 +97,17 @@ func generateSchemaEmbeddings(
 			continue
 		}
 		vecStr := string(vecBytes)
+		logger.Info().
+			Int64("id", obj.ID).
+			Str("name", obj.Name).
+			Int("dims", len(vec)).
+			Str("sample", vecStr[:min(80, len(vecStr))]).
+			Msg("[DEBUG] schema object embedding generated")
 
-		if err := gormDB.Model(&models.SchemaObject{}).
-			Where("id = ?", obj.ID).
-			Update("embedding", vecStr).Error; err != nil {
+		// Raw Exec: GORM's Model(&obj).Update() generates WHERE id = ? (lowercase)
+		// which silently matches 0 rows — the actual PK column is "Id" (quoted).
+		query := fmt.Sprintf(`UPDATE schema_objects SET %s = ? WHERE "Id" = ?`, embeddingCol)
+		if err := gormDB.Exec(query, vecStr, obj.ID).Error; err != nil {
 			logger.Warn().Err(err).
 				Int64("id", obj.ID).
 				Str("name", obj.Name).
@@ -122,7 +126,8 @@ func generateSchemaEmbeddings(
 func generateRoutineEmbeddings(
 	ctx context.Context,
 	gormDB *gorm.DB,
-	embedService *services.EmbeddingService,
+	embedService *services.OllamaEmbeddingService,
+	embeddingCol string,
 	logger zerolog.Logger,
 ) (updated, failed int) {
 	var objects []models.RoutineObject
@@ -157,10 +162,15 @@ func generateRoutineEmbeddings(
 			continue
 		}
 		vecStr := string(vecBytes)
+		logger.Info().
+			Int64("id", obj.ID).
+			Str("name", obj.Name).
+			Int("dims", len(vec)).
+			Str("sample", vecStr[:min(80, len(vecStr))]).
+			Msg("[DEBUG] routine object embedding generated")
 
-		if err := gormDB.Model(&models.RoutineObject{}).
-			Where("id = ?", obj.ID).
-			Update("embedding", vecStr).Error; err != nil {
+		query := fmt.Sprintf(`UPDATE routine_objects SET %s = ? WHERE "Id" = ?`, embeddingCol)
+		if err := gormDB.Exec(query, vecStr, obj.ID).Error; err != nil {
 			logger.Warn().Err(err).
 				Int64("id", obj.ID).
 				Str("name", obj.Name).

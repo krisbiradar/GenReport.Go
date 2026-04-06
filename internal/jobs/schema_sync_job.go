@@ -128,26 +128,23 @@ func syncDatabaseSchema(ctx context.Context, gormDB *gorm.DB, dbRecord models.Da
 		if routineKeyCount[key] > 1 {
 			name = fmt.Sprintf("%s_%d", rm.Name, routineKeyCount[key])
 		}
+		stripped := services.StripRoutineForEmbedding(text)
 		routineObjects = append(routineObjects, models.RoutineObject{
 			DatabaseID:    dbRecord.ID,
 			Name:          name,
 			Type:          rm.Type,
 			FullSchema:    &text,
-			EmbeddingText: &text,
+			EmbeddingText: &stripped,
 			Embedding:     nil,
 		})
 	}
 
 
-	// Transactionally replace existing schema records for this database
+	// Upsert schema records — no DELETE so row IDs are stable across syncs.
+	// The embedding job identifies rows by ID; deleting + re-inserting would
+	// assign new IDs and cause UPDATE WHERE "Id" = <old> to silently miss.
+	// Embedding columns are excluded from DoUpdates so vectors are preserved.
 	err = gormDB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("database_id = ?", dbRecord.ID).Delete(&models.SchemaObject{}).Error; err != nil {
-			return fmt.Errorf("failed to delete old schema objects: %w", err)
-		}
-		if err := tx.Where("database_id = ?", dbRecord.ID).Delete(&models.RoutineObject{}).Error; err != nil {
-			return fmt.Errorf("failed to delete old routine objects: %w", err)
-		}
-
 		if len(schemaObjects) > 0 {
 			result := tx.Clauses(clause.OnConflict{
 				Columns: []clause.Column{
@@ -156,8 +153,6 @@ func syncDatabaseSchema(ctx context.Context, gormDB *gorm.DB, dbRecord models.Da
 					{Name: "type"},
 				},
 				DoUpdates: clause.AssignmentColumns([]string{
-					"embedding",
-					"embedding_ollama",
 					"embedding_text",
 					"full_schema",
 					"updated_at",
@@ -175,8 +170,6 @@ func syncDatabaseSchema(ctx context.Context, gormDB *gorm.DB, dbRecord models.Da
 					{Name: "type"},
 				},
 				DoUpdates: clause.AssignmentColumns([]string{
-					"embedding",
-					"embedding_ollama",
 					"embedding_text",
 					"full_schema",
 					"updated_at",

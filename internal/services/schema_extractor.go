@@ -755,3 +755,51 @@ func coalesce(m map[string]string, keys ...string) string {
 	return ""
 }
 
+
+// StripRoutineForEmbedding returns a compact, embedding-friendly representation
+// of a routine definition. It scans the text line-by-line and stops at the
+// first standalone body-start keyword (AS, BEGIN, IS) or a Postgres-style
+// dollar-quote opener (AS $$), keeping only the signature section.
+// The full body is preserved separately in FullSchema.
+func StripRoutineForEmbedding(fullText string) string {
+	if fullText == "" {
+		return ""
+	}
+	text := strings.TrimSpace(fullText)
+	lines := strings.Split(text, "\n")
+
+	var sigLines []string
+	for _, line := range lines {
+		upper := strings.ToUpper(strings.TrimSpace(line))
+
+		// Standalone body-start keywords on their own line
+		if upper == "AS" || upper == "BEGIN" || upper == "IS" {
+			break
+		}
+		// Postgres dollar-quoted body: "AS $$" or "AS $tag$"
+		if strings.HasPrefix(upper, "AS $$") || strings.HasPrefix(upper, "AS $") {
+			break
+		}
+		// Inline body start at end of line: ") AS" or ") IS"
+		if strings.HasSuffix(upper, ") AS") || strings.HasSuffix(upper, ") IS") {
+			sigLines = append(sigLines, line)
+			break
+		}
+
+		sigLines = append(sigLines, line)
+	}
+
+	result := strings.TrimSpace(strings.Join(sigLines, "\n"))
+	if result == "" {
+		// Fallback: first 500 chars of original so we always have something
+		if len(text) > 500 {
+			return text[:500]
+		}
+		return text
+	}
+	// Cap at 2000 chars — plenty for a signature, keeps token cost low
+	if len(result) > 2000 {
+		result = result[:2000]
+	}
+	return result
+}
