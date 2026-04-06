@@ -15,7 +15,6 @@ import (
 
 	"github.com/rs/zerolog"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // SchemaSyncJob iterates through all stored databases across all supported providers,
@@ -54,7 +53,16 @@ func SchemaSyncJob(cfg config.Config, producer *broker.Producer, logger zerolog.
 		return combined
 	}
 
-	logger.Info().Msg("Completed SchemaSyncJob")
+	logger.Info().Msg("Completed SchemaSyncJob — triggering embedding generation")
+
+	// 4. Fire embedding generation now that fresh rows are in the DB.
+	//    Running it here (not as a separate concurrent job) guarantees
+	//    embeddings always see the newly inserted rows with their correct IDs.
+	if embedErr := GenerateEmbeddingsJob(producer, logger); embedErr != nil {
+		logger.Warn().Err(embedErr).Msg("Embedding generation completed with errors after schema sync")
+		return embedErr
+	}
+
 	return nil
 }
 
@@ -140,43 +148,25 @@ func syncDatabaseSchema(ctx context.Context, gormDB *gorm.DB, dbRecord models.Da
 	}
 
 
-	// Upsert schema records — no DELETE so row IDs are stable across syncs.
-	// The embedding job identifies rows by ID; deleting + re-inserting would
-	// assign new IDs and cause UPDATE WHERE "Id" = <old> to silently miss.
-	// Embedding columns are excluded from DoUpdates so vectors are preserved.
+	// Transactionally replace existing schema records for this database.
+	// DELETE + INSERT ensures stale rows (dropped tables/procs) are removed.
+	// Embeddings are always nil here — GenerateEmbeddingsJob runs right after.
 	err = gormDB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("database_id = ?", dbRecord.ID).Delete(&models.SchemaObject{}).Error; err != nil {
+			return fmt.Errorf("failed to delete old schema objects: %w", err)
+		}
+		if err := tx.Where("database_id = ?", dbRecord.ID).Delete(&models.RoutineObject{}).Error; err != nil {
+			return fmt.Errorf("failed to delete old routine objects: %w", err)
+		}
+
 		if len(schemaObjects) > 0 {
-			result := tx.Clauses(clause.OnConflict{
-				Columns: []clause.Column{
-					{Name: "database_id"},
-					{Name: "name"},
-					{Name: "type"},
-				},
-				DoUpdates: clause.AssignmentColumns([]string{
-					"embedding_text",
-					"full_schema",
-					"updated_at",
-				}),
-			}).CreateInBatches(schemaObjects, 100)
-			if result.Error != nil {
-				return fmt.Errorf("failed to upsert schema objects: %w", result.Error)
+			if err := tx.CreateInBatches(schemaObjects, 100).Error; err != nil {
+				return fmt.Errorf("failed to insert schema objects: %w", err)
 			}
 		}
 		if len(routineObjects) > 0 {
-			result := tx.Clauses(clause.OnConflict{
-				Columns: []clause.Column{
-					{Name: "database_id"},
-					{Name: "name"},
-					{Name: "type"},
-				},
-				DoUpdates: clause.AssignmentColumns([]string{
-					"embedding_text",
-					"full_schema",
-					"updated_at",
-				}),
-			}).CreateInBatches(routineObjects, 100)
-			if result.Error != nil {
-				return fmt.Errorf("failed to upsert routine objects: %w", result.Error)
+			if err := tx.CreateInBatches(routineObjects, 100).Error; err != nil {
+				return fmt.Errorf("failed to insert routine objects: %w", err)
 			}
 		}
 

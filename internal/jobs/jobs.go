@@ -11,9 +11,10 @@ import (
 )
 
 // jobEntry maps a config key to its task constructor.
-// The constructor receives cfg so jobs can read runtime configuration.
+// StartNow controls whether the job fires immediately at startup.
 type jobEntry struct {
 	ConfigKey string
+	StartNow  bool
 	NewTask   func(cfg config.Config, producer *broker.Producer, logger zerolog.Logger) gocron.Task
 }
 
@@ -23,24 +24,31 @@ func buildRegistry() []jobEntry {
 	return []jobEntry{
 		{
 			ConfigKey: "HEALTH_CHECK",
+			StartNow:  true,
 			NewTask: func(cfg config.Config, producer *broker.Producer, logger zerolog.Logger) gocron.Task {
 				return gocron.NewTask(HealthCheckJob, producer, logger)
 			},
 		},
 		{
 			ConfigKey: "CLEANUP",
+			StartNow:  true,
 			NewTask: func(cfg config.Config, producer *broker.Producer, logger zerolog.Logger) gocron.Task {
 				return gocron.NewTask(CleanupJob, producer, logger)
 			},
 		},
 		{
 			ConfigKey: "SCHEMA_SYNC",
+			StartNow:  true,
 			NewTask: func(cfg config.Config, producer *broker.Producer, logger zerolog.Logger) gocron.Task {
 				return gocron.NewTask(SchemaSyncJob, cfg, producer, logger)
 			},
 		},
 		{
+			// GENERATE_EMBEDDINGS is NOT started immediately — SchemaSyncJob
+			// fires it inline after sync completes. This job still runs on its
+			// own interval to refresh embeddings when schema hasn't changed.
 			ConfigKey: "GENERATE_EMBEDDINGS",
+			StartNow:  false,
 			NewTask: func(cfg config.Config, producer *broker.Producer, logger zerolog.Logger) gocron.Task {
 				return gocron.NewTask(GenerateEmbeddingsJob, producer, logger)
 			},
@@ -65,10 +73,7 @@ func RegisterAll(s gocron.Scheduler, cfg config.Config, producer *broker.Produce
 		// Capture loop variable for use inside the closure.
 		jobConfigKey := entry.ConfigKey
 
-		_, err := s.NewJob(
-			gocron.DurationJob(settings.Interval),
-			entry.NewTask(cfg, producer, logger),
-			gocron.WithStartAt(gocron.WithStartImmediately()),
+		jobOpts := []gocron.JobOption{
 			gocron.WithEventListeners(
 				gocron.AfterJobRunsWithError(func(jobID uuid.UUID, _ string, jobErr error) {
 					logger.Error().Err(jobErr).Str("job", jobConfigKey).Msg("job failed — disabling and sending alert")
@@ -83,6 +88,15 @@ func RegisterAll(s gocron.Scheduler, cfg config.Config, producer *broker.Produce
 					}
 				}),
 			),
+		}
+		if entry.StartNow {
+			jobOpts = append(jobOpts, gocron.WithStartAt(gocron.WithStartImmediately()))
+		}
+
+		_, err := s.NewJob(
+			gocron.DurationJob(settings.Interval),
+			entry.NewTask(cfg, producer, logger),
+			jobOpts...,
 		)
 		if err != nil {
 			logger.Error().
