@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -39,17 +40,18 @@ func SchemaSyncJob(cfg config.Config, producer *broker.Producer, logger zerolog.
 		return fmt.Errorf("failed to fetch databases: %w", err)
 	}
 
-	// 3. Process each database
-	var lastErr error
+	// 3. Process each database — collect ALL errors, not just the last one
+	var errs []error
 	for _, dbRecord := range dbList {
 		if err := syncDatabaseSchema(ctx, gormDB, dbRecord, logger, cfg.EncryptionMasterKey); err != nil {
-			lastErr = err
+			errs = append(errs, fmt.Errorf("db %q (id=%d): %w", dbRecord.Name, dbRecord.ID, err))
 		}
 	}
 
-	if lastErr != nil {
-		logger.Error().Err(lastErr).Msg("SchemaSyncJob completed with errors")
-		return lastErr
+	if len(errs) > 0 {
+		combined := errors.Join(errs...)
+		logger.Error().Err(combined).Int("failed", len(errs)).Int("total", len(dbList)).Msg("SchemaSyncJob completed with errors")
+		return combined
 	}
 
 	logger.Info().Msg("Completed SchemaSyncJob")
@@ -70,27 +72,44 @@ func syncDatabaseSchema(ctx context.Context, gormDB *gorm.DB, dbRecord models.Da
 	connString := dbRecord.ConnectionString
 	if masterKey != "" && len(connString) > 20 && !strings.Contains(connString, "host=") && !strings.Contains(connString, "://") && !strings.Contains(connString, "Server=") {
 		// Attempt to decrypt. Try common credential types used in C#
-		if dec, err := security.Decrypt(connString, "ConnectionString", masterKey); err == nil && dec != "" {
+		decrypted := false
+		if dec, decErr := security.Decrypt(connString, "ConnectionString", masterKey); decErr == nil && dec != "" {
 			connString = dec
-		} else if dec, err := security.Decrypt(connString, "DatabaseConnectionString", masterKey); err == nil && dec != "" {
+			decrypted = true
+		} else if dec, decErr := security.Decrypt(connString, "DatabaseConnectionString", masterKey); decErr == nil && dec != "" {
 			connString = dec
+			decrypted = true
+		}
+		if !decrypted {
+			log.Warn().Msg("Failed to decrypt connection string — proceeding with raw value (may fail)")
 		}
 	}
 
 	// Extract schema metadata
-	schemas, routines, err := extractor.Extract(ctx, connString)
+	schemas, routines, err := extractor.Extract(ctx, connString, log)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to extract schema metadata")
 		return err
 	}
 
-	// Map to GORM objects — embeddings are always nil here
+	// Map to GORM objects — embeddings are always nil here.
+	// Deduplicate by (name, type): if the same key appears more than once
+	// (e.g. overloaded Postgres functions), append a counter suffix so every
+	// row has a distinct unique-key and the batch upsert doesn't hit
+	// "ON CONFLICT DO UPDATE command cannot affect row a second time" (21000).
+	schemaKeyCount := make(map[string]int)
 	var schemaObjects []models.SchemaObject
 	for _, sm := range schemas {
 		text := sm.SchemaText
+		key := sm.Name + "\x00" + sm.Type
+		schemaKeyCount[key]++
+		name := sm.Name
+		if schemaKeyCount[key] > 1 {
+			name = fmt.Sprintf("%s_%d", sm.Name, schemaKeyCount[key])
+		}
 		schemaObjects = append(schemaObjects, models.SchemaObject{
 			DatabaseID:    dbRecord.ID,
-			Name:          sm.Name,
+			Name:          name,
 			Type:          sm.Type,
 			FullSchema:    &text,
 			EmbeddingText: &text,
@@ -99,18 +118,26 @@ func syncDatabaseSchema(ctx context.Context, gormDB *gorm.DB, dbRecord models.Da
 	}
 
 	// ── Build routine objects ─────────────────────────────────────────────────
+	routineKeyCount := make(map[string]int)
 	routineObjects := make([]models.RoutineObject, 0, len(routines))
 	for _, rm := range routines {
 		text := rm.RoutineText
+		key := rm.Name + "\x00" + rm.Type
+		routineKeyCount[key]++
+		name := rm.Name
+		if routineKeyCount[key] > 1 {
+			name = fmt.Sprintf("%s_%d", rm.Name, routineKeyCount[key])
+		}
 		routineObjects = append(routineObjects, models.RoutineObject{
 			DatabaseID:    dbRecord.ID,
-			Name:          rm.Name,
+			Name:          name,
 			Type:          rm.Type,
 			FullSchema:    &text,
 			EmbeddingText: &text,
 			Embedding:     nil,
 		})
 	}
+
 
 	// Transactionally replace existing schema records for this database
 	err = gormDB.Transaction(func(tx *gorm.DB) error {
@@ -133,6 +160,7 @@ func syncDatabaseSchema(ctx context.Context, gormDB *gorm.DB, dbRecord models.Da
 					"embedding_ollama",
 					"embedding_text",
 					"full_schema",
+					"updated_at",
 				}),
 			}).CreateInBatches(schemaObjects, 100)
 			if result.Error != nil {
@@ -151,6 +179,7 @@ func syncDatabaseSchema(ctx context.Context, gormDB *gorm.DB, dbRecord models.Da
 					"embedding_ollama",
 					"embedding_text",
 					"full_schema",
+					"updated_at",
 				}),
 			}).CreateInBatches(routineObjects, 100)
 			if result.Error != nil {

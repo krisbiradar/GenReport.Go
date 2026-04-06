@@ -30,7 +30,8 @@ func main() {
 	}
 
 	cfg := config.Load()
-	logger := zerolog.New(os.Stdout).With().Timestamp().Logger().Level(cfg.LogLevel)
+	console := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: "15:04:05"}
+	logger := zerolog.New(console).With().Timestamp().Logger().Level(cfg.LogLevel)
 
 	// Shared database (GORM) — optional, only if DATABASE_URL is configured
 	var gormDB *gorm.DB
