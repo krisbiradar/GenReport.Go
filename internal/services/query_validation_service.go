@@ -121,10 +121,17 @@ func checkReadOnlyPostgres(rawSQL string) (models.QueryValidationResult, bool) {
 		if node == nil {
 			continue
 		}
-		switch node.Node.(type) {
+		switch n := node.Node.(type) {
 		case *pg_query.Node_SelectStmt,
-			*pg_query.Node_ExplainStmt,
-			*pg_query.Node_CopyStmt: // COPY TO stdout is read-only
+			*pg_query.Node_ExplainStmt:
+			// allowed
+		case *pg_query.Node_CopyStmt: // COPY TO stdout is read-only
+			if n.CopyStmt.IsFrom {
+				return models.QueryValidationResult{
+					Status:      models.QueryValidationStatusNotReadOnly,
+					Description: "statement is not a read-only operation (COPY FROM detected)",
+				}, false
+			}
 			// allowed
 		default:
 			return models.QueryValidationResult{
@@ -353,7 +360,7 @@ func checkReadOnlyByKeyword(rawSQL string, providerLabel string) (models.QueryVa
 // ─────────────────────────────────────────────────────────────────────────────
 
 func dryRun(ctx context.Context, rawSQL string, provider models.DbProvider, connString string, logger zerolog.Logger) models.QueryValidationResult {
-	driverName, prepFn, beginSQL, rollbackSQL := providerDriverConfig(provider, connString)
+	driverName, prepFn := providerDriverConfig(provider, connString)
 
 	// prepFn translates ADO.NET or raw DSN into a driver-compatible DSN.
 	dsn := prepFn(connString)
@@ -375,22 +382,20 @@ func dryRun(ctx context.Context, rawSQL string, provider models.DbProvider, conn
 		}
 	}
 
-	// Begin transaction.
-	if _, err := db.ExecContext(ctx, beginSQL); err != nil {
+	// Begin transaction to ensure execution and rollback occur on the exact same pool connection.
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: false})
+	if err != nil {
 		return models.QueryValidationResult{
 			Status:      models.QueryValidationStatusExecutionError,
 			Description: fmt.Sprintf("failed to begin transaction: %s", err.Error()),
 		}
 	}
-
-	// Always rollback.
-	defer func() {
-		_, _ = db.ExecContext(ctx, rollbackSQL)
-	}()
+	// Always rollback to prevent persistence.
+	defer tx.Rollback()
 
 	// Execute the query. Empty result set is fine — we only care whether it
 	// errors at the DB level.
-	rows, err := db.QueryContext(ctx, rawSQL)
+	rows, err := tx.QueryContext(ctx, rawSQL)
 	if err != nil {
 		return models.QueryValidationResult{
 			Status:      models.QueryValidationStatusExecutionError,
@@ -415,37 +420,27 @@ func dryRun(ctx context.Context, rawSQL string, provider models.DbProvider, conn
 	}
 }
 
-// providerDriverConfig returns the SQL driver name, a DSN preparation function,
-// and the BEGIN / ROLLBACK statements for the given provider.
+// providerDriverConfig returns the SQL driver name, and a DSN preparation function
+// for the given provider.
 func providerDriverConfig(provider models.DbProvider, connString string) (
 	driverName string,
 	prepFn func(string) string,
-	beginSQL string,
-	rollbackSQL string,
 ) {
 	switch provider {
 	case models.DbProviderNpgSql:
 		return "pgx",
-			func(cs string) string { return prepareConnectionString(cs, "postgres") },
-			"BEGIN",
-			"ROLLBACK"
+			func(cs string) string { return prepareConnectionString(cs, "postgres") }
 	case models.DbProviderSqlClient:
 		return "sqlserver",
-			func(cs string) string { return prepareConnectionString(cs, "sqlserver") },
-			"BEGIN TRANSACTION",
-			"ROLLBACK TRANSACTION"
+			func(cs string) string { return prepareConnectionString(cs, "sqlserver") }
 	case models.DbProviderMySqlConnector:
 		return "mysql",
-			func(cs string) string { return prepareConnectionString(cs, "mysql") },
-			"START TRANSACTION",
-			"ROLLBACK"
+			func(cs string) string { return prepareConnectionString(cs, "mysql") }
 	case models.DbProviderOracle:
 		return "oracle",
-			func(cs string) string { return prepareConnectionString(cs, "oracle") },
-			"-- oracle implicit tx", // Oracle has implicit transactions; no BEGIN needed
-			"ROLLBACK"
+			func(cs string) string { return prepareConnectionString(cs, "oracle") }
 	default:
-		return "", func(cs string) string { return cs }, "", ""
+		return "", func(cs string) string { return cs }
 	}
 }
 
