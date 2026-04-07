@@ -83,7 +83,10 @@ func main() {
 	}
 	uploadHandler := handlers.NewUploadHandler(r2Service, logger)
 
-	router := handlers.NewRouter(connectionHandler, uploadHandler)
+	queryValidationService := services.NewQueryValidationService(gormDB, cfg.EncryptionMasterKey, logger)
+	queryValidationHandler := handlers.NewQueryValidationHandler(queryValidationService, logger)
+
+	router := handlers.NewRouter(connectionHandler, uploadHandler, queryValidationHandler)
 
 
 	server := &http.Server{
