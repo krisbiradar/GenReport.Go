@@ -104,9 +104,7 @@ func generateSchemaEmbeddings(
 			Str("sample", vecStr[:min(80, len(vecStr))]).
 			Msg("[DEBUG] schema object embedding generated")
 
-		// Raw Exec: GORM's Model(&obj).Update() generates WHERE id = ? (lowercase)
-		// which silently matches 0 rows — the actual PK column is "Id" (quoted).
-		query := fmt.Sprintf(`UPDATE schema_objects SET %s = ? WHERE "Id" = ?`, embeddingCol)
+		query := fmt.Sprintf(`UPDATE schema_objects SET %s = ? WHERE id = ?`, embeddingCol)
 		if err := gormDB.Exec(query, vecStr, obj.ID).Error; err != nil {
 			logger.Warn().Err(err).
 				Int64("id", obj.ID).
@@ -169,7 +167,7 @@ func generateRoutineEmbeddings(
 			Str("sample", vecStr[:min(80, len(vecStr))]).
 			Msg("[DEBUG] routine object embedding generated")
 
-		query := fmt.Sprintf(`UPDATE routine_objects SET %s = ? WHERE "Id" = ?`, embeddingCol)
+		query := fmt.Sprintf(`UPDATE routine_objects SET %s = ? WHERE id = ?`, embeddingCol)
 		if err := gormDB.Exec(query, vecStr, obj.ID).Error; err != nil {
 			logger.Warn().Err(err).
 				Int64("id", obj.ID).

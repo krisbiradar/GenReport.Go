@@ -4,7 +4,7 @@ import "time"
 
 // Report maps to the "reports" table.
 type Report struct {
-	ID            int64      `gorm:"column:Id;primaryKey"`
+	ID            int64      `gorm:"column:id;primaryKey"`
 	Name          string     `gorm:"column:name"`
 	Description   *string    `gorm:"column:description"`
 	QueryID       int64      `gorm:"column:query_id"`
