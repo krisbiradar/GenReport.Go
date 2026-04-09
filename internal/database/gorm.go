@@ -24,7 +24,7 @@ func Connect(dsn string, log zerolog.Logger) (*gorm.DB, error) {
 	}
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger:                                   logger.Default.LogMode(logger.Silent),
+		Logger:                                   logger.Default.LogMode(logger.Info),
 		DisableAutomaticPing:                     false,
 		SkipDefaultTransaction:                   true,
 		DisableForeignKeyConstraintWhenMigrating: true,

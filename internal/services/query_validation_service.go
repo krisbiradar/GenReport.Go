@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	pg_query "github.com/pganalyze/pg_query_go/v6"
 	"vitess.io/vitess/go/vt/sqlparser"
@@ -359,11 +360,25 @@ func checkReadOnlyByKeyword(rawSQL string, providerLabel string) (models.QueryVa
 // Phase 2: dry-run inside a rolled-back transaction
 // ─────────────────────────────────────────────────────────────────────────────
 
+// dryRunTimeout is the maximum time allowed for the entire dry-run phase
+// (ping + begin-tx + query execution + row drain). This prevents slow or
+// unbounded queries (e.g. SELECT * on a huge table) from hanging the
+// validation endpoint — we only need the DB to confirm syntactic/semantic
+// correctness, not to stream all rows.
+const dryRunTimeout = 2 * time.Second
+
 func dryRun(ctx context.Context, rawSQL string, provider models.DbProvider, connString string, logger zerolog.Logger) models.QueryValidationResult {
 	driverName, prepFn := providerDriverConfig(provider, connString)
 
 	// prepFn translates ADO.NET or raw DSN into a driver-compatible DSN.
 	dsn := prepFn(connString)
+
+	// Wrap the parent context with a hard 2-second deadline. This bounds
+	// ping + begin-tx + query + row-drain so that queries like SELECT * on
+	// enormous tables cannot stall the validation endpoint indefinitely.
+	// The parent ctx is still honoured for earlier cancellation.
+	dryCtx, cancel := context.WithTimeout(ctx, dryRunTimeout)
+	defer cancel()
 
 	db, err := sql.Open(driverName, dsn)
 	if err != nil {
@@ -375,7 +390,7 @@ func dryRun(ctx context.Context, rawSQL string, provider models.DbProvider, conn
 	}
 	defer db.Close()
 
-	if err := db.PingContext(ctx); err != nil {
+	if err := db.PingContext(dryCtx); err != nil {
 		return models.QueryValidationResult{
 			Status:      models.QueryValidationStatusExecutionError,
 			Description: fmt.Sprintf("database unreachable: %s", err.Error()),
@@ -383,7 +398,7 @@ func dryRun(ctx context.Context, rawSQL string, provider models.DbProvider, conn
 	}
 
 	// Begin transaction to ensure execution and rollback occur on the exact same pool connection.
-	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: false})
+	tx, err := db.BeginTx(dryCtx, &sql.TxOptions{ReadOnly: false})
 	if err != nil {
 		return models.QueryValidationResult{
 			Status:      models.QueryValidationStatusExecutionError,
@@ -394,9 +409,18 @@ func dryRun(ctx context.Context, rawSQL string, provider models.DbProvider, conn
 	defer tx.Rollback()
 
 	// Execute the query. Empty result set is fine — we only care whether it
-	// errors at the DB level.
-	rows, err := tx.QueryContext(ctx, rawSQL)
+	// errors at the DB level. The 2-second deadline on dryCtx will cancel
+	// the query if row streaming takes too long (e.g. SELECT * with no LIMIT).
+	rows, err := tx.QueryContext(dryCtx, rawSQL)
 	if err != nil {
+		// Surface a friendlier message on deadline exceeded so the caller
+		// knows this is a timeout, not a malformed query.
+		if dryCtx.Err() != nil {
+			return models.QueryValidationResult{
+				Status:      models.QueryValidationStatusExecutionError,
+				Description: fmt.Sprintf("dry-run timed out after %s — query may be valid but returns too many rows (e.g. missing LIMIT/TOP)", dryRunTimeout),
+			}
+		}
 		return models.QueryValidationResult{
 			Status:      models.QueryValidationStatusExecutionError,
 			Description: fmt.Sprintf("query execution error: %s", err.Error()),
@@ -405,9 +429,16 @@ func dryRun(ctx context.Context, rawSQL string, provider models.DbProvider, conn
 	defer rows.Close()
 
 	// Drain rows to detect any deferred errors (e.g. from streaming cursors).
+	// The dryCtx deadline will abort this loop if the result set is enormous.
 	for rows.Next() {
 	}
 	if err := rows.Err(); err != nil {
+		if dryCtx.Err() != nil {
+			return models.QueryValidationResult{
+				Status:      models.QueryValidationStatusExecutionError,
+				Description: fmt.Sprintf("dry-run timed out after %s — query may be valid but returns too many rows (e.g. missing LIMIT/TOP)", dryRunTimeout),
+			}
+		}
 		return models.QueryValidationResult{
 			Status:      models.QueryValidationStatusExecutionError,
 			Description: fmt.Sprintf("query result error: %s", err.Error()),

@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
-
 	"genreport/internal/broker"
 	"genreport/internal/config"
 	"genreport/internal/database"
 	"genreport/internal/models"
 	"genreport/internal/security"
 	"genreport/internal/services"
+	"strings"
 
 	"github.com/rs/zerolog"
 	"gorm.io/gorm"
@@ -146,7 +145,6 @@ func syncDatabaseSchema(ctx context.Context, gormDB *gorm.DB, dbRecord models.Da
 			Embedding:     nil,
 		})
 	}
-
 
 	// Transactionally replace existing schema records for this database.
 	// DELETE + INSERT ensures stale rows (dropped tables/procs) are removed.
