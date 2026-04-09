@@ -49,6 +49,13 @@ type Config struct {
 	SMTP               SMTPConfig
 	Ollama             OllamaConfig
 	EncryptionMasterKey string
+
+	// ReportCallbackURL is the endpoint the report_query worker POSTs the
+	// completed SQLite file to (multipart). Defaults to /callback.
+	ReportCallbackURL string
+	// ReportQueryBatchSize is the number of rows fetched per batch during
+	// cursor-based report execution. Defaults to 500.
+	ReportQueryBatchSize int
 }
 
 func Load() Config {
@@ -80,7 +87,9 @@ func Load() Config {
 			BaseURL:        readString("OLLAMA_BASE_URL", "http://localhost:11434"),
 			EmbeddingModel: readString("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text"),
 		},
-		EncryptionMasterKey: readString("ENCRYPTION_MASTER_KEY", ""),
+		EncryptionMasterKey:  readString("ENCRYPTION_MASTER_KEY", ""),
+		ReportCallbackURL:    readString("REPORT_CALLBACK_URL", "/callback"),
+		ReportQueryBatchSize: readInt("REPORT_QUERY_BATCH_SIZE", 500),
 	}
 }
 

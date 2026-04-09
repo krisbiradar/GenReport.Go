@@ -23,7 +23,10 @@ func All(cfg config.Config, logger zerolog.Logger, db *gorm.DB) []WorkerEntry {
 	}
 
 	if db != nil {
-		entries = append(entries, WorkerEntry{Topic: "schema_copy", Handler: HandleSchemaCopy(cfg, logger, db)})
+		entries = append(entries,
+			WorkerEntry{Topic: "schema_copy", Handler: HandleSchemaCopy(cfg, logger, db)},
+			WorkerEntry{Topic: "report_query", Handler: HandleReportQuery(cfg, logger, db)},
+		)
 	}
 
 	return entries
