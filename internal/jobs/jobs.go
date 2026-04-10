@@ -1,6 +1,12 @@
 package jobs
 
 import (
+	"bufio"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
 	"genreport/internal/broker"
 	"genreport/internal/config"
 	"genreport/internal/services"
@@ -81,7 +87,13 @@ func RegisterAll(s gocron.Scheduler, cfg config.Config, producer *broker.Produce
 					// RemoveJob must not be called directly here: gocron holds its internal
 					// mutex while invoking this callback, so calling RemoveJob on the same
 					// goroutine would deadlock. Dispatch to a new goroutine instead.
-					go s.RemoveJob(jobID)
+					go func() {
+						s.RemoveJob(jobID)
+						// Persist the disable to .env so it survives a server restart.
+						if err := disableJobInEnv(jobConfigKey, logger); err != nil {
+							logger.Warn().Err(err).Str("job", jobConfigKey).Msg("could not persist job disable to .env")
+						}
+					}()
 
 					if emailService != nil {
 						go emailService.SendJobFailureAlert(jobConfigKey, jobErr)
@@ -111,4 +123,86 @@ func RegisterAll(s gocron.Scheduler, cfg config.Config, producer *broker.Produce
 			Dur("interval", settings.Interval).
 			Msg("registered background job (producer)")
 	}
+}
+
+// disableJobInEnv sets JOB_<key>_ENABLED=false in the project's .env file.
+// It walks up from the current working directory to find the file.
+func disableJobInEnv(jobKey string, logger zerolog.Logger) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("could not determine working directory: %w", err)
+	}
+	envPath := ""
+	for dir := cwd; ; dir = filepath.Dir(dir) {
+		candidate := filepath.Join(dir, ".env")
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			envPath = candidate
+			break
+		}
+		if dir == filepath.Dir(dir) {
+			break // reached filesystem root
+		}
+	}
+	if envPath == "" {
+		return fmt.Errorf(".env file not found (searched from %s)", cwd)
+	}
+
+	targetKey := "JOB_" + jobKey + "_ENABLED"
+
+	// Read all lines.
+	f, err := os.Open(envPath)
+	if err != nil {
+		return fmt.Errorf("could not open .env: %w", err)
+	}
+	var lines []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	f.Close()
+	if scanErr := scanner.Err(); scanErr != nil {
+		return fmt.Errorf("error reading .env: %w", scanErr)
+	}
+
+	// Rewrite the matching line; append it if not found.
+	found := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, targetKey+"=") || trimmed == targetKey {
+			lines[i] = targetKey + "=false"
+			found = true
+			break
+		}
+	}
+	if !found {
+		lines = append(lines, targetKey+"=false")
+	}
+
+	// Write atomically via a temp file + rename.
+	tmp, err := os.CreateTemp(filepath.Dir(envPath), ".env.tmp.*")
+	if err != nil {
+		return fmt.Errorf("could not create temp file: %w", err)
+	}
+	writer := bufio.NewWriter(tmp)
+	for _, line := range lines {
+		if _, werr := fmt.Fprintln(writer, line); werr != nil {
+			tmp.Close()
+			os.Remove(tmp.Name())
+			return fmt.Errorf("error writing temp file: %w", werr)
+		}
+	}
+	if err := writer.Flush(); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return fmt.Errorf("error flushing temp file: %w", err)
+	}
+	tmp.Close()
+
+	if err := os.Rename(tmp.Name(), envPath); err != nil {
+		os.Remove(tmp.Name())
+		return fmt.Errorf("could not update .env: %w", err)
+	}
+
+	logger.Info().Str("job", jobKey).Str("env", envPath).Msg("persisted job disable to .env")
+	return nil
 }

@@ -4,7 +4,7 @@ import "time"
 
 // MessageReport maps to the "message_reports" table.
 type MessageReport struct {
-	ID        int64        `gorm:"column:Id;primaryKey"`
+	ID        int64        `gorm:"column:id;primaryKey"`
 	MessageID int64        `gorm:"column:message_id"`
 	ReportID  int64        `gorm:"column:report_id"`
 	CreatedAt time.Time    `gorm:"column:created_at"`

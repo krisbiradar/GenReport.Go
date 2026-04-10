@@ -5,7 +5,7 @@ import "time"
 // RoutineObject maps to the "routine_objects" table.
 // Represents a stored procedure or function from a database with its vector embedding.
 type RoutineObject struct {
-	ID              int64     `gorm:"column:Id;primaryKey"`
+	ID              int64     `gorm:"column:id;primaryKey"`
 	DatabaseID      int64     `gorm:"column:database_id;not null"`
 	Name            string    `gorm:"column:name;size:255;not null"`
 	Type            string    `gorm:"column:type;size:10;not null"`

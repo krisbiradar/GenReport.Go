@@ -4,7 +4,7 @@ import "time"
 
 // MessageAttachment maps to the "message_attachments" table.
 type MessageAttachment struct {
-	ID          int64        `gorm:"column:Id;primaryKey"`
+	ID          int64        `gorm:"column:id;primaryKey"`
 	MessageID   int64        `gorm:"column:message_id"`
 	MediaFileID int64        `gorm:"column:media_file_id"`
 	CreatedAt   time.Time    `gorm:"column:created_at"`
