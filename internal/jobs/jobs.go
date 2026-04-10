@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"genreport/internal/broker"
 	"genreport/internal/config"
@@ -15,6 +16,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 )
+
+// envMu serialises all concurrent read-modify-write operations on the .env
+// file. Without this, two jobs failing simultaneously would both read the
+// same original file, each modify a different key, and the last os.Rename
+// would silently drop the other job's disable.
+var envMu sync.Mutex
 
 // jobEntry maps a config key to its task constructor.
 // StartNow controls whether the job fires immediately at startup.
@@ -126,8 +133,16 @@ func RegisterAll(s gocron.Scheduler, cfg config.Config, producer *broker.Produce
 }
 
 // disableJobInEnv sets JOB_<key>_ENABLED=false in the project's .env file.
+//
+// The entire read-modify-write is serialised by envMu. Without the mutex, two
+// goroutines running concurrently would each read the same original file,
+// modify a different key, and the last os.Rename would silently drop the other
+// job's change — even though the rename itself is atomic.
 // It walks up from the current working directory to find the file.
 func disableJobInEnv(jobKey string, logger zerolog.Logger) error {
+	envMu.Lock()
+	defer envMu.Unlock()
+
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("could not determine working directory: %w", err)
