@@ -109,6 +109,7 @@ func syncDatabaseSchema(ctx context.Context, gormDB *gorm.DB, dbRecord models.Da
 	var schemaObjects []models.SchemaObject
 	for _, sm := range schemas {
 		text := sm.SchemaText
+		embedText := sm.EmbeddingText
 		key := sm.Name + "\x00" + sm.Type
 		schemaKeyCount[key]++
 		name := sm.Name
@@ -120,7 +121,7 @@ func syncDatabaseSchema(ctx context.Context, gormDB *gorm.DB, dbRecord models.Da
 			Name:          name,
 			Type:          sm.Type,
 			FullSchema:    &text,
-			EmbeddingText: &text,
+			EmbeddingText: &embedText,
 			Embedding:     nil,
 		})
 	}

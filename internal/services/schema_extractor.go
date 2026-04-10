@@ -19,9 +19,10 @@ import (
 )
 
 type SchemaMetadata struct {
-	Name       string
-	Type       string // "table", "view", "collection"
-	SchemaText string
+	Name          string
+	Type          string // "table", "view", "collection"
+	SchemaText    string // full DDL → stored in full_schema
+	EmbeddingText string // slim column:type [FK] text → stored in embedding_text
 }
 
 type RoutineMetadata struct {
@@ -102,7 +103,16 @@ func (e *PostgresExtractor) Extract(ctx context.Context, connString string, logg
 				logger.Warn().Err(buildErr).Str("table", tableName).Msg("postgres: failed to build compact DDL, skipping")
 				continue
 			}
-			schemas = append(schemas, SchemaMetadata{Name: tableName, Type: t, SchemaText: ddl})
+			// Views embed their SQL body; tables get a lean column:type [FK] text.
+			embedText := ddl
+			if t == "table" {
+				if et, etErr := buildPostgresTableEmbeddingText(ctx, db, tableSchema, tableName); etErr == nil && et != "" {
+					embedText = et
+				} else if etErr != nil {
+					logger.Warn().Err(etErr).Str("table", tableName).Msg("postgres: failed to build table embedding text, using full DDL")
+				}
+			}
+			schemas = append(schemas, SchemaMetadata{Name: tableName, Type: t, SchemaText: ddl, EmbeddingText: embedText})
 		}
 		if err := tableRows.Err(); err != nil {
 			logger.Warn().Err(err).Msg("postgres: error iterating table rows")
@@ -271,31 +281,54 @@ func (e *SQLServerExtractor) Extract(ctx context.Context, connString string, log
 	var schemas []SchemaMetadata
 	var routines []RoutineMetadata
 
-	// 1a. Tables (Columns only since OBJECT_DEFINITION doesn't support basic tables)
+	// 1a. Tables — single query: columns + FK refs via sys.foreign_key_columns join.
 	tableRows, err := db.QueryContext(ctx, `
-		SELECT t.name, 'table', c.name, type_name(c.user_type_id) 
-		FROM sys.tables t JOIN sys.columns c ON t.object_id = c.object_id
+		SELECT t.name,
+		       c.name                    AS col_name,
+		       type_name(c.user_type_id) AS data_type,
+		       ISNULL(rt.name, '')       AS ref_table,
+		       ISNULL(rc.name, '')       AS ref_col
+		FROM sys.tables t
+		JOIN sys.columns c ON c.object_id = t.object_id
+		LEFT JOIN sys.foreign_key_columns fkc
+		    ON fkc.parent_object_id = c.object_id AND fkc.parent_column_id = c.column_id
+		LEFT JOIN sys.tables rt ON rt.object_id = fkc.referenced_object_id
+		LEFT JOIN sys.columns rc
+		    ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
 		WHERE t.name NOT IN ('__EFMigrationHistory')
+		ORDER BY t.name, c.column_id
 	`)
 	if err != nil {
 		logger.Warn().Err(err).Msg("sqlserver: failed to query tables")
 	} else {
 		defer tableRows.Close()
-		tableMap := make(map[string][]string)
+		type ssCol struct{ name, dataType, refTable, refCol string }
+		tableColMap := make(map[string][]ssCol)
 		for tableRows.Next() {
-			var tableName, tableType, colName, dataType string
-			if err := tableRows.Scan(&tableName, &tableType, &colName, &dataType); err != nil {
+			var tableName, colName, dataType, refTable, refCol string
+			if err := tableRows.Scan(&tableName, &colName, &dataType, &refTable, &refCol); err != nil {
 				logger.Warn().Err(err).Msg("sqlserver: failed to scan table row")
 				continue
 			}
-			tableMap[tableName] = append(tableMap[tableName], fmt.Sprintf("[%s] %s", colName, dataType))
+			tableColMap[tableName] = append(tableColMap[tableName], ssCol{colName, dataType, refTable, refCol})
 		}
 		if err := tableRows.Err(); err != nil {
 			logger.Warn().Err(err).Msg("sqlserver: error iterating table rows")
 		}
-		for name, cols := range tableMap {
-			schemaText := fmt.Sprintf("CREATE TABLE [%s] (\n  %s\n);", name, strings.Join(cols, ",\n  "))
-			schemas = append(schemas, SchemaMetadata{Name: name, Type: "table", SchemaText: schemaText})
+		for name, cols := range tableColMap {
+			schemaCols := make([]string, 0, len(cols))
+			embedLines := make([]string, 0, len(cols))
+			for _, col := range cols {
+				schemaCols = append(schemaCols, fmt.Sprintf("[%s] %s", col.name, col.dataType))
+				line := col.name + ": " + col.dataType
+				if col.refTable != "" {
+					line += fmt.Sprintf(" -- FK: %s.%s", col.refTable, col.refCol)
+				}
+				embedLines = append(embedLines, line)
+			}
+			schemaText := fmt.Sprintf("CREATE TABLE [%s] (\n  %s\n);", name, strings.Join(schemaCols, ",\n  "))
+			embedText := "table: " + name + "\n" + strings.Join(embedLines, "\n")
+			schemas = append(schemas, SchemaMetadata{Name: name, Type: "table", SchemaText: schemaText, EmbeddingText: embedText})
 		}
 	}
 
@@ -319,7 +352,7 @@ func (e *SQLServerExtractor) Extract(ctx context.Context, connString string, log
 				logger.Warn().Str("view", viewName).Msg("sqlserver: null definition for view, skipping")
 				continue
 			}
-			schemas = append(schemas, SchemaMetadata{Name: viewName, Type: "view", SchemaText: definition.String})
+			schemas = append(schemas, SchemaMetadata{Name: viewName, Type: "view", SchemaText: definition.String, EmbeddingText: definition.String})
 		}
 		if err := viewRows.Err(); err != nil {
 			logger.Warn().Err(err).Msg("sqlserver: error iterating view rows")
@@ -409,7 +442,15 @@ func (e *MySQLExtractor) Extract(ctx context.Context, connString string, logger 
 				logger.Warn().Str("table", tableName).Msg("mysql: empty DDL for object, skipping")
 				continue
 			}
-			schemas = append(schemas, SchemaMetadata{Name: tableName, Type: t, SchemaText: ddl})
+			embedText := ddl // views embed their SQL body
+			if t == "table" {
+				if et, etErr := buildMySQLTableEmbeddingText(ctx, db, tableName); etErr == nil && et != "" {
+					embedText = et
+				} else if etErr != nil {
+					logger.Warn().Err(etErr).Str("table", tableName).Msg("mysql: failed to build table embedding text, using full DDL")
+				}
+			}
+			schemas = append(schemas, SchemaMetadata{Name: tableName, Type: t, SchemaText: ddl, EmbeddingText: embedText})
 		}
 		if err := tableRows.Err(); err != nil {
 			logger.Warn().Err(err).Msg("mysql: error iterating table rows")
@@ -544,7 +585,16 @@ func (e *OracleExtractor) Extract(ctx context.Context, connString string, logger
 				logger.Warn().Str("object", objName).Msg("oracle: empty DDL, skipping")
 				continue
 			}
-			schemas = append(schemas, SchemaMetadata{Name: objName, Type: strings.ToLower(objType), SchemaText: ddl.String})
+			objTypeLower := strings.ToLower(objType)
+			embedText := ddl.String // views embed their SQL body
+			if objTypeLower == "table" {
+				if et, etErr := buildOracleTableEmbeddingText(ctx, db, objName); etErr == nil && et != "" {
+					embedText = et
+				} else if etErr != nil {
+					logger.Warn().Err(etErr).Str("object", objName).Msg("oracle: failed to build table embedding text, using full DDL")
+				}
+			}
+			schemas = append(schemas, SchemaMetadata{Name: objName, Type: objTypeLower, SchemaText: ddl.String, EmbeddingText: embedText})
 		}
 		if err := tableRows.Err(); err != nil {
 			logger.Warn().Err(err).Msg("oracle: error iterating table rows")
@@ -629,10 +679,12 @@ func (e *MongoDBExtractor) Extract(ctx context.Context, connString string, logge
 			continue
 		}
 		for _, colName := range collections {
+			text := fmt.Sprintf("Collection: %s\nDatabase: %s\nType: NoSQL Document Store", colName, dbName)
 			schemas = append(schemas, SchemaMetadata{
-				Name:       colName,
-				Type:       "collection",
-				SchemaText: fmt.Sprintf("Collection: %s\nDatabase: %s\nType: NoSQL Document Store", colName, dbName),
+				Name:          colName,
+				Type:          "collection",
+				SchemaText:    text,
+				EmbeddingText: text,
 			})
 		}
 	}
@@ -802,4 +854,177 @@ func StripRoutineForEmbedding(fullText string) string {
 		result = result[:2000]
 	}
 	return result
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-provider table embedding text builders
+//
+// Each function queries the provider's system catalogs directly to produce:
+//   table: <name>
+//   col_name: data_type
+//   col_name: data_type -- FK: referenced_table.referenced_col
+//
+// This is far more accurate than regex-parsing DDL strings.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// buildPostgresTableEmbeddingText queries information_schema for column types
+// and FK relationships for a single Postgres table.
+func buildPostgresTableEmbeddingText(ctx context.Context, db *sql.DB, schema, table string) (string, error) {
+	// ── FK map: column → "FK: ref_table.ref_col" ─────────────────────────────
+	fkMap := make(map[string]string)
+	fkRows, err := db.QueryContext(ctx, `
+		SELECT kcu.column_name, ccu.table_name, ccu.column_name
+		FROM information_schema.table_constraints     AS tc
+		JOIN information_schema.key_column_usage      AS kcu
+		     ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+		JOIN information_schema.constraint_column_usage AS ccu
+		     ON ccu.constraint_name = tc.constraint_name
+		WHERE tc.constraint_type = 'FOREIGN KEY'
+		  AND tc.table_schema = $1
+		  AND tc.table_name   = $2
+	`, schema, table)
+	if err == nil {
+		defer fkRows.Close()
+		for fkRows.Next() {
+			var col, refTable, refCol string
+			if err := fkRows.Scan(&col, &refTable, &refCol); err == nil {
+				fkMap[col] = fmt.Sprintf("FK: %s.%s", refTable, refCol)
+			}
+		}
+	}
+
+	// ── Columns ───────────────────────────────────────────────────────────────
+	colRows, err := db.QueryContext(ctx, `
+		SELECT column_name,
+		       CASE
+				 WHEN data_type = 'character varying' THEN 'varchar(' || COALESCE(character_maximum_length::text, 'max') || ')'
+				 WHEN data_type = 'character'         THEN 'char(' || COALESCE(character_maximum_length::text, 'max') || ')'
+				 WHEN data_type = 'numeric'           THEN 'numeric(' || COALESCE(numeric_precision::text,'?') || ',' || COALESCE(numeric_scale::text,'?') || ')'
+				 ELSE data_type
+			   END AS col_type
+		FROM information_schema.columns
+		WHERE table_schema = $1 AND table_name = $2
+		ORDER BY ordinal_position
+	`, schema, table)
+	if err != nil {
+		return "", fmt.Errorf("postgres: failed to query columns for table embedding %s.%s: %w", schema, table, err)
+	}
+	defer colRows.Close()
+
+	var sb strings.Builder
+	sb.WriteString("table: ")
+	sb.WriteString(table)
+	sb.WriteString("\n")
+	for colRows.Next() {
+		var colName, colType string
+		if err := colRows.Scan(&colName, &colType); err != nil {
+			continue
+		}
+		sb.WriteString(colName)
+		sb.WriteString(": ")
+		sb.WriteString(colType)
+		if fk, ok := fkMap[colName]; ok {
+			sb.WriteString(" -- ")
+			sb.WriteString(fk)
+		}
+		sb.WriteString("\n")
+	}
+	return strings.TrimSpace(sb.String()), nil
+}
+
+// buildMySQLTableEmbeddingText queries information_schema.COLUMNS and
+// KEY_COLUMN_USAGE for a single MySQL/MariaDB table.
+func buildMySQLTableEmbeddingText(ctx context.Context, db *sql.DB, tableName string) (string, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT
+		    c.COLUMN_NAME,
+		    c.COLUMN_TYPE,
+		    COALESCE(kcu.REFERENCED_TABLE_NAME,  '') AS ref_table,
+		    COALESCE(kcu.REFERENCED_COLUMN_NAME, '') AS ref_col
+		FROM information_schema.COLUMNS c
+		LEFT JOIN information_schema.KEY_COLUMN_USAGE kcu
+		    ON  kcu.TABLE_SCHEMA  = c.TABLE_SCHEMA
+		    AND kcu.TABLE_NAME    = c.TABLE_NAME
+		    AND kcu.COLUMN_NAME   = c.COLUMN_NAME
+		    AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
+		WHERE c.TABLE_SCHEMA = DATABASE() AND c.TABLE_NAME = ?
+		ORDER BY c.ORDINAL_POSITION
+	`, tableName)
+	if err != nil {
+		return "", fmt.Errorf("mysql: failed to query columns+FKs for %s: %w", tableName, err)
+	}
+	defer rows.Close()
+
+	var sb strings.Builder
+	sb.WriteString("table: ")
+	sb.WriteString(tableName)
+	sb.WriteString("\n")
+	for rows.Next() {
+		var colName, colType, refTable, refCol string
+		if err := rows.Scan(&colName, &colType, &refTable, &refCol); err != nil {
+			continue
+		}
+		sb.WriteString(colName)
+		sb.WriteString(": ")
+		sb.WriteString(colType)
+		if refTable != "" {
+			sb.WriteString(fmt.Sprintf(" -- FK: %s.%s", refTable, refCol))
+		}
+		sb.WriteString("\n")
+	}
+	return strings.TrimSpace(sb.String()), nil
+}
+
+// buildOracleTableEmbeddingText queries user_tab_columns + user_constraints
+// to produce the lean embedding text for a single Oracle table.
+func buildOracleTableEmbeddingText(ctx context.Context, db *sql.DB, tableName string) (string, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT
+		    tc.COLUMN_NAME,
+		    tc.DATA_TYPE ||
+		        CASE
+		            WHEN tc.DATA_PRECISION IS NOT NULL
+		                THEN '(' || tc.DATA_PRECISION || ',' || NVL(tc.DATA_SCALE, 0) || ')'
+		            WHEN tc.CHAR_LENGTH > 0
+		                THEN '(' || tc.CHAR_LENGTH || ')'
+		            ELSE ''
+		        END AS data_type,
+		    NVL(fk.ref_table, '') AS ref_table,
+		    NVL(fk.ref_col,   '') AS ref_col
+		FROM user_tab_columns tc
+		LEFT JOIN (
+		    SELECT ucc.table_name, ucc.column_name,
+		           ucc2.table_name  AS ref_table,
+		           ucc2.column_name AS ref_col
+		    FROM user_constraints uc
+		    JOIN user_cons_columns ucc  ON uc.constraint_name   = ucc.constraint_name
+		    JOIN user_cons_columns ucc2 ON uc.r_constraint_name = ucc2.constraint_name
+		    WHERE uc.constraint_type = 'R'
+		) fk ON fk.table_name = tc.table_name AND fk.column_name = tc.column_name
+		WHERE tc.table_name = :1
+		ORDER BY tc.column_id
+	`, tableName)
+	if err != nil {
+		return "", fmt.Errorf("oracle: failed to query columns+FKs for %s: %w", tableName, err)
+	}
+	defer rows.Close()
+
+	var sb strings.Builder
+	sb.WriteString("table: ")
+	sb.WriteString(tableName)
+	sb.WriteString("\n")
+	for rows.Next() {
+		var colName, dataType, refTable, refCol string
+		if err := rows.Scan(&colName, &dataType, &refTable, &refCol); err != nil {
+			continue
+		}
+		sb.WriteString(colName)
+		sb.WriteString(": ")
+		sb.WriteString(dataType)
+		if refTable != "" {
+			sb.WriteString(fmt.Sprintf(" -- FK: %s.%s", refTable, refCol))
+		}
+		sb.WriteString("\n")
+	}
+	return strings.TrimSpace(sb.String()), nil
 }
