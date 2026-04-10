@@ -196,6 +196,11 @@ func disableJobInEnv(jobKey string, logger zerolog.Logger) error {
 		os.Remove(tmp.Name())
 		return fmt.Errorf("error flushing temp file: %w", err)
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return fmt.Errorf("error syncing temp file: %w", err)
+	}
 	tmp.Close()
 
 	if err := os.Rename(tmp.Name(), envPath); err != nil {
