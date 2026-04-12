@@ -73,7 +73,13 @@ func (s *ReportQueryService) Execute(ctx context.Context, req models.ReportJobRe
 		return "", fmt.Errorf("source database unreachable: %w", err)
 	}
 
-	// ── 5. Execute the query ──────────────────────────────────────────────────
+	// ── 5. Static read-only validation (guard against mid-flight mutation) ────
+	// checkReadOnly is defined in query_validation_service.go (same package).
+	if result, ok := checkReadOnly(req.Query, dbRecord.Provider); !ok {
+		return "", fmt.Errorf("query rejected — not read-only: %s", result.Description)
+	}
+
+	// ── 6. Execute the query ──────────────────────────────────────────────────
 	rows, err := srcDB.QueryContext(queryCtx, req.Query)
 	if err != nil {
 		return "", fmt.Errorf("query execution failed: %w", err)
