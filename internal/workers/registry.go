@@ -5,6 +5,7 @@ import (
 
 	"genreport/internal/broker"
 	"genreport/internal/config"
+	"genreport/internal/services"
 	"gorm.io/gorm"
 )
 
@@ -16,7 +17,7 @@ type WorkerEntry struct {
 
 // All returns every registered worker.
 // To add a new worker: create a handler file, then add an entry here.
-func All(cfg config.Config, logger zerolog.Logger, db *gorm.DB) []WorkerEntry {
+func All(cfg config.Config, logger zerolog.Logger, db *gorm.DB, producer *broker.Producer) []WorkerEntry {
 	entries := []WorkerEntry{
 		{Topic: "health_check", Handler: HandleHealthCheck(logger)},
 		{Topic: "cleanup", Handler: HandleCleanup(logger)},
@@ -24,7 +25,11 @@ func All(cfg config.Config, logger zerolog.Logger, db *gorm.DB) []WorkerEntry {
 
 	if db != nil {
 		entries = append(entries, WorkerEntry{Topic: "schema_copy", Handler: HandleSchemaCopy(cfg, logger, db)})
+
+		reportSvc := services.NewReportQueryService(db, cfg.EncryptionMasterKey, logger)
+		entries = append(entries, WorkerEntry{Topic: "report_generate", Handler: HandleReportGenerate(reportSvc, producer, logger)})
 	}
 
 	return entries
 }
+

@@ -57,7 +57,7 @@ func main() {
 
 	// Start one worker per topic
 	done := make(chan struct{})
-	for _, w := range workers.All(cfg, logger, gormDB) {
+	for _, w := range workers.All(cfg, logger, gormDB, producer) {
 		if err := consumer.StartWorker(w.Topic, w.Handler, done); err != nil {
 			logger.Fatal().Err(err).Str("topic", w.Topic).Msg("failed to start worker")
 		}
@@ -86,7 +86,9 @@ func main() {
 	queryValidationService := services.NewQueryValidationService(gormDB, cfg.EncryptionMasterKey, logger)
 	queryValidationHandler := handlers.NewQueryValidationHandler(queryValidationService, logger)
 
-	router := handlers.NewRouter(connectionHandler, uploadHandler, queryValidationHandler)
+	reportHandler := handlers.NewReportHandler(producer, logger)
+
+	router := handlers.NewRouter(connectionHandler, uploadHandler, queryValidationHandler, reportHandler)
 
 
 	server := &http.Server{
