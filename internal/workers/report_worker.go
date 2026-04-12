@@ -16,7 +16,6 @@ const (
 	topicReportSuccess = "report_success"
 	topicReportError   = "report_error"
 )
-)
 
 // HandleReportGenerate returns a JobHandler that:
 //  1. Deserialises the ReportJobRequest from the "report_generate" queue.
