@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	topicReportGenerate = "report_generate"
-	topicReportSuccess  = "report_success"
-	topicReportError    = "report_error"
+	topicReportSuccess = "report_success"
+	topicReportError   = "report_error"
+)
 )
 
 // HandleReportGenerate returns a JobHandler that:
